@@ -1,0 +1,40 @@
+# ── 运行时数据（默认落在程序目录，便携设计）──────────────────
+/data/
+/downloads/
+/logs/
+
+# 但保留占位说明
+!/data/.gitkeep
+
+# ── Python ───────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── 构建产物 ─────────────────────────────────────────────────
+/build/
+/dist/
+# build.spec 是我们自己维护的构建配置，必须入库；
+# 这里只忽略 PyInstaller 随手生成的其它 spec
+*.spec
+!build.spec
+
+# 发布流水线依据 git tag 生成的版本文件
+/app/_version.py
+
+# ── 编辑器 / 系统 ────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+
+# ── 本地临时 ─────────────────────────────────────────────────
+/_scratch/
+*.log
