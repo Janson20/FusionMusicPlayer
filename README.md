@@ -129,10 +129,21 @@ LRC 解析（补零、offset、一行多标签、翻译配对、当前行二分�
 播放队列（四种播放模式、洗牌不重复、历史回溯、增删移动、序列化）
 与曲目模型，**不依赖 Qt 界面也不联网**，可直接交给 pytest。
 
-`tests/test_ui_smoke.py` 启动真实界面并校验窗口行为，守住了两个曾经真实
+- **测试**：`tests/test_core.py`（凭据加密、LRC 解析、播放队列，24 项，离线可跑）
+
+`tests/test_ui_smoke.py` 会启动真实界面并校验窗口行为，守住两个曾经真实
 出现过的缺陷：设置 / 登录窗口跟着主窗口一起弹出来，以及关闭后无法再打开
-（`Cannot call method 'showWindow' of null`）。无显示环境用
-`xvfb-run -a python tests/test_ui_smoke.py`。
+（`Cannot call method 'showWindow' of null`）。**它只在本地跑**，不进 CI：
+
+```bash
+python tests/test_ui_smoke.py
+# 无显示环境（Linux CI / 服务器）：
+xvfb-run -a python tests/test_ui_smoke.py
+```
+
+CI 里跑它需要在 ubuntu runner 上装一整套 Qt 的 X / OpenGL / 音频系统库
+（`libegl1`、`libva2`、`libpulse0`、gstreamer 等，装一次好几分钟），
+为了省 runner 时间就没放进去 —— 本地跑一次只要十几秒。
 
 代码风格：`python -m pyflakes main.py app/*.py app/bridges app/core app/security tests`
 
@@ -191,15 +202,21 @@ python scripts/release.py patch --no-push   # 提交并打 tag，但不推送
 推送 tag 后 GitHub Actions 自动执行：
 
 ```
-verify → build-windows → release
+build-windows → release
 ```
 
-1. **verify**：跑核心测试与 QML 冒烟测试，**不通过就不发版**；
-2. **build-windows**：校验 tag 与 `app/_version.py` 一致 → 注入版本号 →
-   打包目录版与单文件版 → 启动冒烟（检查进程存活且日志里没有 `QML:` 告警）
+1. **build-windows**：注入 tag 版本号 → 打包目录版与单文件版 → 20 秒启动自检
    → 打成 ZIP / EXE；
-3. **release**：按约定式提交聚合 changelog（✨ 新功能 / 🐛 修复 / 💡 改进 /
+2. **release**：按约定式提交聚合 changelog（✨ 新功能 / 🐛 修复 / 💡 改进 /
    📝 其它），用 `softprops/action-gh-release` 建 Release 并附上下载表格。
+
+**发版流程刻意做得很轻**：不跑测试门禁、不做多平台矩阵。测试在 `ci.yml` 里
+（push / PR 时跑，单 job，一分钟内结束），发版时不重复跑一遍，省 runner 时间。
+
+唯一保留的是一个 20 秒的启动自检，而且设成了 `continue-on-error` ——
+**只报告、不阻断**。打包出来的程序能不能起来本地不一定复现（很容易漏收一个
+Qt 插件 DLL，我就踩过一次），有这条 warning 至少能立刻看到。不想要就把
+`Boot check` 那一步删掉。
 
 发布产物：
 
@@ -208,13 +225,13 @@ verify → build-windows → release
 | `FusionMusicPlayer-<版本>-win-x64.zip` | 便携版，解压即用，启动更快 |
 | `FusionMusicPlayer-<版本>-win-x64.exe` | 单文件版，首次启动需解压，稍慢 |
 
-> 也可以手动推 tag（`git tag -a v1.2.3 -m "..." && git push origin v1.2.3`），
-> 但 `build-windows` 里的版本一致性检查会在 `app/_version.py` 对不上时直接失败
-> —— 这样就不会发出一个 About 页版本号错误的包。
+> 也可以手动推 tag（`git tag -a v1.2.3 -m "..." && git push origin v1.2.3`）。
+> 这种情况下如果 `app/_version.py` 与 tag 对不上，流水线只会打一条 warning，
+> 打包仍按 tag 的版本号走 —— 产物里的版本号永远是对的。
 
-`.github/workflows/ci.yml` 在 push / PR 上跑三件事：pyflakes 门禁、
-Python 3.10/3.11/3.12 的核心测试矩阵、以及 **PyInstaller 打包 + 启动冒烟**
-——后面这项专门用来拦住「源码能跑、打包就崩」的问题。
+`.github/workflows/ci.yml` 在 push / PR 上只跑一个 job：pyflakes 门禁 +
+核心测试（约一分钟）。**不在这里做 PyInstaller 打包** —— 每次提交都完整打一次包
+既慢又没必要，打包问题交给发版时的 `build-windows` 去暴露。
 
 macOS / Linux 未提供预编译包，从源码运行即可（`pip install -r requirements.txt && python main.py`）。
 
