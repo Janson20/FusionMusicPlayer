@@ -1,0 +1,7 @@
+# 开发 / CI 额外依赖（运行时依赖见 requirements.txt）
+-r requirements.txt
+
+pyinstaller>=6.6        # 打包
+pytest>=8.0             # 测试运行器（tests/test_core.py 也可直接 python 运行）
+pyflakes>=3.2           # 静态检查
+pypinyin>=0.49          # 中文排序，顺带覆盖该可选依赖

@@ -1,0 +1,247 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号（仅 workflow_dispatch 时需要，例如 1.0.0）"
+        required: false
+        default: "0.0.0-dev"
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: FusionMusicPlayer
+
+jobs:
+  # ── 发布前置门禁：跑不通测试就不发版 ────────────────────────
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Qt runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 \
+            libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
+            libxcb-shape0 libxcb-xinerama0 libdbus-1-3 xvfb
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Core regression tests
+        run: python tests/test_core.py
+
+      - name: QML smoke test
+        run: xvfb-run -a --server-args="-screen 0 1280x800x24" python tests/test_ui_smoke.py
+        env:
+          QT_QPA_PLATFORM: xcb
+          QT_LOGGING_RULES: "qt.qml.binding.removal.info=false"
+
+  # ── Windows x64 打包 ───────────────────────────────────────
+  build-windows:
+    name: Build Windows x64
+    needs: [verify]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements-dev.txt
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $v = "${{ github.ref_name }}" -replace '^v', ''
+          } else {
+            $v = "${{ github.event.inputs.version }}"
+          }
+          if ([string]::IsNullOrWhiteSpace($v)) { $v = "0.0.0-dev" }
+          Write-Host "版本: $v"
+          "value=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Inject version into the build
+        shell: pwsh
+        run: |
+          # app/paths.py 会优先读取 app/_version.py（该文件不入库）
+          $content = "APP_VERSION = `"${{ steps.version.outputs.value }}`"`n"
+          $utf8 = New-Object System.Text.UTF8Encoding $false
+          [System.IO.File]::WriteAllText("$PWD\app\_version.py", $content, $utf8)
+          Get-Content app\_version.py
+
+      - name: Build portable (onedir)
+        run: python -m PyInstaller build.spec --noconfirm --log-level WARN
+
+      - name: Smoke-test the portable build
+        shell: pwsh
+        run: |
+          $exe = "dist\${{ env.APP_NAME }}\${{ env.APP_NAME }}.exe"
+          if (-not (Test-Path $exe)) { throw "未生成可执行文件: $exe" }
+          $proc = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 25
+          if ($proc.HasExited) { throw "打包后的程序提前退出，退出码 $($proc.ExitCode)" }
+          $log = "dist\${{ env.APP_NAME }}\data\logs\fusion.log"
+          if (Test-Path $log) {
+            Get-Content $log -Encoding UTF8 -Tail 15
+            if (Select-String -Path $log -Pattern "QML:" -Quiet) {
+              throw "打包后的程序出现 QML 告警"
+            }
+          }
+          Stop-Process -Id $proc.Id -Force
+          # 冒烟测试产生的数据不要带进发布包
+          Remove-Item -Recurse -Force "dist\${{ env.APP_NAME }}\data" -ErrorAction SilentlyContinue
+          Write-Host "便携版启动正常"
+
+      - name: Package portable ZIP
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.version.outputs.value }}"
+          $zip = "dist\${{ env.APP_NAME }}-$ver-win-x64.zip"
+          Compress-Archive -Path "dist\${{ env.APP_NAME }}\*" -DestinationPath $zip -CompressionLevel Optimal
+          Get-Item $zip | Select-Object Name, @{n="MB";e={[math]::Round($_.Length/1MB,1)}}
+
+      - name: Build single-file EXE
+        env:
+          FMP_ONEFILE: "1"
+        run: python -m PyInstaller build.spec --noconfirm --log-level WARN
+
+      - name: Rename single-file EXE
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.version.outputs.value }}"
+          Move-Item "dist\${{ env.APP_NAME }}.exe" "dist\${{ env.APP_NAME }}-$ver-win-x64.exe" -Force
+          Get-ChildItem dist -Filter "*.exe" | Select-Object Name, @{n="MB";e={[math]::Round($_.Length/1MB,1)}}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: |
+            dist/${{ env.APP_NAME }}-*-win-x64.zip
+            dist/${{ env.APP_NAME }}-*-win-x64.exe
+            dist/${{ env.APP_NAME }}/data/logs/
+          if-no-files-found: warn
+          retention-days: 7
+
+  # ── 发布 ───────────────────────────────────────────────────
+  release:
+    name: Create Release
+    needs: [build-windows]
+    runs-on: ubuntu-latest
+    if: github.ref_type == 'tag'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Collect release files
+        run: |
+          mkdir -p release_files
+          find artifacts -type f \( -name "*.exe" -o -name "*.zip" \) -exec cp {} release_files/ \;
+          ls -lh release_files/
+
+      - name: Generate changelog
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+
+          if [ -z "$PREV_TAG" ]; then
+            COMMITS=$(git log --pretty=format:"- %s" --reverse)
+          else
+            COMMITS=$(git log "${PREV_TAG}..HEAD" --pretty=format:"- %s" --reverse)
+          fi
+
+          {
+            echo "## 🚀 Fusion Music Player ${VERSION}"
+            echo ""
+            echo "从 [FMCL](https://github.com/Janson20/FMCL) 抽取音乐播放器功能，"
+            echo "用 PySide6 + FluentUI QML 重构的独立桌面播放器。"
+            echo ""
+
+            FEATURES=$(echo "$COMMITS" | grep -iE "^- (feat|feature)" || true)
+            if [ -n "$FEATURES" ]; then
+              echo "### ✨ 新功能"
+              echo "$FEATURES" | sed -E 's/^- feat(\([^)]*\))?: /- /; s/^- feature(\([^)]*\))?: /- /'
+              echo ""
+            fi
+
+            FIXES=$(echo "$COMMITS" | grep -iE "^- (fix|bugfix)" || true)
+            if [ -n "$FIXES" ]; then
+              echo "### 🐛 修复"
+              echo "$FIXES" | sed -E 's/^- fix(\([^)]*\))?: /- /; s/^- bugfix(\([^)]*\))?: /- /'
+              echo ""
+            fi
+
+            IMPROVEMENTS=$(echo "$COMMITS" | grep -iE "^- (refactor|perf|docs|style|test|build|ci|chore)" || true)
+            if [ -n "$IMPROVEMENTS" ]; then
+              echo "### 💡 改进"
+              echo "$IMPROVEMENTS"
+              echo ""
+            fi
+
+            OTHER=$(echo "$COMMITS" | grep -ivE "^- (feat|feature|fix|bugfix|refactor|perf|docs|style|test|build|ci|chore)" || true)
+            if [ -n "$OTHER" ]; then
+              echo "### 📝 其它改动"
+              echo "$OTHER"
+              echo ""
+            fi
+
+            echo "### 📦 下载"
+            echo ""
+            echo "| 平台 | 文件 | 说明 |"
+            echo "|------|------|------|"
+            echo "| Windows x64 | [${APP_NAME}-${VERSION}-win-x64.zip](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${APP_NAME}-${VERSION}-win-x64.zip) | 便携版，解压即用，启动更快 |"
+            echo "| Windows x64 | [${APP_NAME}-${VERSION}-win-x64.exe](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${APP_NAME}-${VERSION}-win-x64.exe) | 单文件版，首次启动稍慢 |"
+            echo ""
+            echo "> 数据（设置、歌单、加密凭据、缓存）默认写在程序同级的 \`data/\` 目录下；"
+            echo "> 若该目录不可写则自动回退到 \`%LOCALAPPDATA%\\${APP_NAME}\`。"
+            echo "> macOS / Linux 用户请从源码运行：\`pip install -r requirements.txt && python main.py\`。"
+            echo ""
+
+            if [ -n "$PREV_TAG" ]; then
+              echo "**完整变更**：https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${{ github.ref_name }}"
+            fi
+          } > CHANGELOG.md
+
+          cat CHANGELOG.md
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release_files/*
+          body_path: CHANGELOG.md
+          generate_release_notes: false
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
