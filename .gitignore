@@ -25,9 +25,6 @@ env/
 *.spec
 !build.spec
 
-# 发布流水线依据 git tag 生成的版本文件
-/app/_version.py
-
 # ── 编辑器 / 系统 ────────────────────────────────────────────
 .vscode/
 .idea/

@@ -83,10 +83,21 @@ jobs:
           Write-Host "版本: $v"
           "value=$v" >> $env:GITHUB_OUTPUT
 
+      - name: Verify the tag matches app/_version.py
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          $declared = (Select-String -Path app\_version.py -Pattern 'APP_VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          $expected = "${{ steps.version.outputs.value }}"
+          if ($declared -ne $expected) {
+            throw "版本不一致：app/_version.py 是 $declared，而 tag 是 $expected。请用 scripts/release.py 发版。"
+          }
+          Write-Host "版本一致: $declared"
+
       - name: Inject version into the build
         shell: pwsh
         run: |
-          # app/paths.py 会优先读取 app/_version.py（该文件不入库）
+          # tag 是发布产物的权威版本号，打包前覆写一次，保证 About 页显示正确
           $content = "APP_VERSION = `"${{ steps.version.outputs.value }}`"`n"
           $utf8 = New-Object System.Text.UTF8Encoding $false
           [System.IO.File]::WriteAllText("$PWD\app\_version.py", $content, $utf8)

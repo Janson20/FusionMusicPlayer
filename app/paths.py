@@ -17,13 +17,13 @@ APP_NAME = "FusionMusicPlayer"
 APP_DISPLAY_NAME = "Fusion Music Player"
 ORG_NAME = "FusionLab"
 
-# 发布构建时由 CI 依据 git tag 生成 app/_version.py；源码运行时用下面的默认值
-try:  # pragma: no cover - 仅在打包流水线中存在
-    from ._version import APP_VERSION as _BUILD_VERSION
-
-    APP_VERSION = str(_BUILD_VERSION)
-except Exception:  # pragma: no cover
-    APP_VERSION = "1.0.0"
+# 版本号的唯一来源是 app/_version.py（由 scripts/release.py 更新，
+# 发布流水线在打包前会依据 git tag 覆写一次）。
+# 保留兜底是为了在文件被误删时仍能启动，而不是隐藏错误。
+try:  # pragma: no cover
+    from ._version import APP_VERSION
+except ImportError:  # pragma: no cover
+    APP_VERSION = "0.0.0-unknown"
 
 _DATA_DIR_OVERRIDE: Optional[Path] = None
 

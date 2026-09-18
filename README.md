@@ -171,15 +171,33 @@ python tools/audit_bundle.py dist/FusionMusicPlayer     # 校验依赖是否齐�
 
 ### 发布流程
 
-`.github/workflows/release.yml` 参考 FMCL 的做法，推一个 `v*.*.*` tag 即可：
+版本号的唯一来源是 `app/_version.py`（入库），发布流水线在打包前会依据
+git tag 再覆写一次，两者由 `scripts/release.py` 保证同步。
+
+一条命令完成发版（参考 FMCL 的 `scripts/release.py`）：
+
+```bash
+python scripts/release.py patch          # 1.0.0 -> 1.0.1
+python scripts/release.py minor          # 1.0.0 -> 1.1.0
+python scripts/release.py 1.2.3          # 指定版本号
+python scripts/release.py patch --dry-run   # 只预览
+python scripts/release.py patch --no-push   # 提交并打 tag，但不推送
+```
+
+它会依次：校验工作区干净 → 确认分支与标签未被占用 → **跑核心测试**
+（不通过就中止）→ 更新 `app/_version.py` → 提交 `chore: release vX.Y.Z`
+→ 打**附注标签** → 推送分支与标签。
+
+推送 tag 后 GitHub Actions 自动执行：
 
 ```
 verify → build-windows → release
 ```
 
 1. **verify**：跑核心测试与 QML 冒烟测试，**不通过就不发版**；
-2. **build-windows**：注入 tag 版本号 → 打包目录版与单文件版 → 启动冒烟
-   （检查进程存活且日志里没有 `QML:` 告警）→ 打成 ZIP / EXE；
+2. **build-windows**：校验 tag 与 `app/_version.py` 一致 → 注入版本号 →
+   打包目录版与单文件版 → 启动冒烟（检查进程存活且日志里没有 `QML:` 告警）
+   → 打成 ZIP / EXE；
 3. **release**：按约定式提交聚合 changelog（✨ 新功能 / 🐛 修复 / 💡 改进 /
    📝 其它），用 `softprops/action-gh-release` 建 Release 并附上下载表格。
 
@@ -189,6 +207,10 @@ verify → build-windows → release
 |---|---|
 | `FusionMusicPlayer-<版本>-win-x64.zip` | 便携版，解压即用，启动更快 |
 | `FusionMusicPlayer-<版本>-win-x64.exe` | 单文件版，首次启动需解压，稍慢 |
+
+> 也可以手动推 tag（`git tag -a v1.2.3 -m "..." && git push origin v1.2.3`），
+> 但 `build-windows` 里的版本一致性检查会在 `app/_version.py` 对不上时直接失败
+> —— 这样就不会发出一个 About 页版本号错误的包。
 
 `.github/workflows/ci.yml` 在 push / PR 上跑三件事：pyflakes 门禁、
 Python 3.10/3.11/3.12 的核心测试矩阵、以及 **PyInstaller 打包 + 启动冒烟**
