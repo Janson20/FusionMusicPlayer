@@ -135,6 +135,7 @@ FluWindow {
 
             NavPane {
                 id: nav
+                objectName: "navPane"
                 anchors {
                     top: parent.top
                     left: parent.left
@@ -145,7 +146,7 @@ FluWindow {
                 favoriteCount: library.favoritesModel.count
                 historyCount: library.historyModel.count
                 localCount: library.localModel.count
-                onPageRequested: app.go(pageId)
+                onPageRequested: function (pageId) { app.go(pageId) }
                 onLoginRequested: loginWindow.showWindow()
             }
 
@@ -177,12 +178,17 @@ FluWindow {
             // 歌单详情覆盖层（从发现页打开）
             PlaylistDetailPanel {
                 id: playlistDetail
-                anchors.fill: parent
+                // 不要用 anchors.fill + x：两者冲突，滑入动画会被锚点吃掉。
+                // 显式给宽高，x 才能正常参与动画。
+                width: parent.width
+                height: parent.height
                 visible: discover.detailId !== ""
-                x: visible ? 0 : parent.width
+                x: visible ? 0 : width
                 opacity: visible ? 1 : 0
                 Behavior on x { NumberAnimation { duration: Theme.durationNormal; easing.type: Easing.OutCubic } }
                 Behavior on opacity { NumberAnimation { duration: Theme.durationFast } }
+                // 左上角「返回」发出的是 closeRequested —— 之前没接上，点了没反应
+                onCloseRequested: discover.closePlaylist()
             }
         }
 
@@ -203,10 +209,12 @@ FluWindow {
         // ── 展开播放页 ──────────────────────────────────
         NowPlayingPanel {
             id: nowPlaying
-            anchors.fill: parent
+            // 同上：不用 anchors.fill，否则 y 动画失效
+            width: parent.width
+            height: parent.height
             visible: opacity > 0
             opacity: app.expanded ? 1 : 0
-            y: app.expanded ? 0 : parent.height * 0.06
+            y: app.expanded ? 0 : height * 0.06
             onCollapseRequested: app.setExpanded(false)
 
             Behavior on opacity { NumberAnimation { duration: Theme.durationNormal } }

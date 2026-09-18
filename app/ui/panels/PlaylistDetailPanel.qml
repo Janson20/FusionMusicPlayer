@@ -29,6 +29,7 @@ Item {
             spacing: 10
 
             FluIconButton {
+                objectName: "detailBackButton"
                 Layout.preferredWidth: 34
                 Layout.preferredHeight: 34
                 Layout.alignment: Qt.AlignVCenter
@@ -161,10 +162,10 @@ Item {
                 onTrackActivated: function (index) {
                     player.playTrackInList(discover.detailModel.allItems(), index)
                 }
-                onRequestPlayNow: player.playTrack(track)
-                onRequestPlayNext: player.playNextTrack(track)
-                onRequestAppend: player.appendToQueue(track)
-                onRequestFavorite: library.toggleFavorite(track)
+                onRequestPlayNow: function (track) { player.playTrack(track) }
+                onRequestPlayNext: function (track) { player.playNextTrack(track) }
+                onRequestAppend: function (track) { player.appendToQueue(track) }
+                onRequestFavorite: function (track) { library.toggleFavorite(track) }
             }
         }
     }

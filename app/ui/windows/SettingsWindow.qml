@@ -220,13 +220,13 @@ FluWindow {
                         label: "启用动画"
                         description: "关闭后界面切换与悬停过渡会立即完成"
                         checked: settings.animations
-                        onToggled: settings.setBool("appearance.animations", value)
+                        onToggled: function (value) { settings.setBool("appearance.animations", value) }
                     }
                     SettingSwitch {
                         label: "展开左侧导航"
                         description: "关闭后导航栏折叠为图标模式"
                         checked: settings.navExpanded
-                        onToggled: settings.setBool("appearance.nav_expanded", value)
+                        onToggled: function (value) { settings.setBool("appearance.nav_expanded", value) }
                     }
                 }
 
@@ -269,13 +269,13 @@ FluWindow {
                         label: "跨音源自动兜底"
                         description: "当前音源无版权时，自动在其它平台搜索同款歌曲继续播放"
                         checked: settings.fallback
-                        onToggled: settings.setBool("sources.fallback", value)
+                        onToggled: function (value) { settings.setBool("sources.fallback", value) }
                     }
                     SettingSwitch {
                         label: "优先原唱"
                         description: "在搜索结果中标记并置顶原唱版本（含百度百科兜底查询）"
                         checked: settings.preferOriginal
-                        onToggled: settings.setBool("sources.prefer_original", value)
+                        onToggled: function (value) { settings.setBool("sources.prefer_original", value) }
                     }
                     FluText {
                         Layout.fillWidth: true
@@ -422,13 +422,13 @@ FluWindow {
                         label: "启动时自动恢复登录"
                         description: "使用程序目录下加密保存的凭据自动登录"
                         checked: settings.autoLogin
-                        onToggled: settings.setBool("account.auto_login", value)
+                        onToggled: function (value) { settings.setBool("account.auto_login", value) }
                     }
                     SettingSwitch {
                         label: "保存登录凭据"
                         description: "关闭后退出程序即需要重新登录"
                         checked: settings.saveCredentials
-                        onToggled: settings.setBool("account.save_credentials", value)
+                        onToggled: function (value) { settings.setBool("account.save_credentials", value) }
                     }
 
                     SectionHeader { Layout.fillWidth: true; title: "凭据存储" }
@@ -462,13 +462,13 @@ FluWindow {
                         label: "显示翻译歌词"
                         description: "网易云部分歌曲提供官方翻译"
                         checked: settings.showTranslation
-                        onToggled: settings.setBool("lyrics.show_translation", value)
+                        onToggled: function (value) { settings.setBool("lyrics.show_translation", value) }
                     }
                     SettingSwitch {
                         label: "显示罗马音"
                         description: "日文歌曲的音译歌词"
                         checked: settings.showRomaji
-                        onToggled: settings.setBool("lyrics.show_romaji", value)
+                        onToggled: function (value) { settings.setBool("lyrics.show_romaji", value) }
                     }
 
                     SectionHeader { Layout.fillWidth: true; title: "字号" }
@@ -514,7 +514,7 @@ FluWindow {
                         label: "启动时自动扫描"
                         description: "程序启动后自动重新扫描已添加的文件夹"
                         checked: settings.scanOnStart
-                        onToggled: settings.setBool("local.scan_on_start", value)
+                        onToggled: function (value) { settings.setBool("local.scan_on_start", value) }
                     }
 
                     Repeater {
@@ -599,7 +599,7 @@ FluWindow {
                         label: "缓存音频文件"
                         description: "需要自定义请求头的音源（如 B 站）本来就会下载到本地缓存"
                         checked: settings.cacheMedia
-                        onToggled: settings.setBool("storage.cache_media", value)
+                        onToggled: function (value) { settings.setBool("storage.cache_media", value) }
                     }
                     RowLayout {
                         spacing: 12

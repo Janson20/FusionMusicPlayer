@@ -119,9 +119,11 @@ set FUSION_MUSIC_HOME=D:\Music\FusionData && python main.py
 ## 开发与测试
 
 ```bash
-python main.py                 # 运行
-python tests/test_core.py      # 核心逻辑回归（离线，24 项）
-python tests/test_ui_smoke.py  # QML 界面冒烟（需要显示环境）
+python main.py                       # 运行
+python tests/test_core.py            # 核心逻辑回归（离线，25 项）
+python tests/test_ui_smoke.py        # QML 界面冒烟（需要显示环境）
+python tools/check_qml_signals.py    # QML 信号处理器静态检查
+python tools/account_probe.py        # 排查网易云账号识别问题（不打印 Cookie）
 ```
 
 `tests/test_core.py` 覆盖凭据加密仓库（往返、篡改检测、缺文件）、
@@ -131,9 +133,10 @@ LRC 解析（补零、offset、一行多标签、翻译配对、当前行二分�
 
 - **测试**：`tests/test_core.py`（凭据加密、LRC 解析、播放队列，24 项，离线可跑）
 
-`tests/test_ui_smoke.py` 会启动真实界面并校验窗口行为，守住两个曾经真实
-出现过的缺陷：设置 / 登录窗口跟着主窗口一起弹出来，以及关闭后无法再打开
-（`Cannot call method 'showWindow' of null`）。**它只在本地跑**，不进 CI：
+`tests/test_ui_smoke.py` 会启动真实界面并校验窗口与导航行为，守住三个曾经真实
+出现过的缺陷：设置 / 登录窗口跟着主窗口一起弹出来、关闭后无法再打开
+（`Cannot call method 'showWindow' of null`）、以及歌单详情页左上角「返回」
+点了没反应（信号发了但没人接）。**它只在本地跑**，不进 CI：
 
 ```bash
 python tests/test_ui_smoke.py
@@ -144,6 +147,19 @@ xvfb-run -a python tests/test_ui_smoke.py
 CI 里跑它需要在 ubuntu runner 上装一整套 Qt 的 X / OpenGL / 音频系统库
 （`libegl1`、`libva2`、`libpulse0`、gstreamer 等，装一次好几分钟），
 为了省 runner 时间就没放进去 —— 本地跑一次只要十几秒。
+
+`tools/check_qml_signals.py` 是纯静态检查（不需要 Qt 运行时），专门拦已废弃的
+信号参数注入：
+
+```qml
+// ✗ Qt 6.7+ 会报 Parameter "pageId" is not declared
+onPageRequested: app.go(pageId)
+// ✓
+onPageRequested: function (pageId) { app.go(pageId) }
+```
+
+它会自动收集项目里所有 `signal foo(Type name)` 的参数名，再找出依赖注入的
+处理器。这条检查留在 CI 里，因为它能覆盖全部 QML 文件，而界面冒烟测试只在本地跑。
 
 代码风格：`python -m pyflakes main.py app/*.py app/bridges app/core app/security tests`
 

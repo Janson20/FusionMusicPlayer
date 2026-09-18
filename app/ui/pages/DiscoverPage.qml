@@ -104,10 +104,10 @@ Item {
                     onTrackActivated: function (index) {
                         player.playTrackInList(discover.dailyModel.allItems(), index)
                     }
-                    onRequestPlayNow: player.playTrack(track)
-                    onRequestPlayNext: player.playNextTrack(track)
-                    onRequestAppend: player.appendToQueue(track)
-                    onRequestFavorite: library.toggleFavorite(track)
+                    onRequestPlayNow: function (track) { player.playTrack(track) }
+                    onRequestPlayNext: function (track) { player.playNextTrack(track) }
+                    onRequestAppend: function (track) { player.appendToQueue(track) }
+                    onRequestFavorite: function (track) { library.toggleFavorite(track) }
                 }
             }
 
@@ -205,10 +205,10 @@ Item {
                     onTrackActivated: function (index) {
                         player.playTrackInList(discover.newSongsModel.allItems(), index)
                     }
-                    onRequestPlayNow: player.playTrack(track)
-                    onRequestPlayNext: player.playNextTrack(track)
-                    onRequestAppend: player.appendToQueue(track)
-                    onRequestFavorite: library.toggleFavorite(track)
+                    onRequestPlayNow: function (track) { player.playTrack(track) }
+                    onRequestPlayNext: function (track) { player.playNextTrack(track) }
+                    onRequestAppend: function (track) { player.appendToQueue(track) }
+                    onRequestFavorite: function (track) { library.toggleFavorite(track) }
                 }
             }
 

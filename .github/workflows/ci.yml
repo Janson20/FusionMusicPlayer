@@ -41,7 +41,14 @@ jobs:
             app/sources/__init__.py \
             app/sources/netease.py \
             scripts \
-            tests
+            tests \
+            tools
 
       - name: Core regression tests
         run: python tests/test_core.py
+
+      - name: QML 信号处理器检查
+        # 拦住已废弃的信号参数注入（Qt 6.7+ 会报
+        # 'Parameter "x" is not declared'）。这个检查纯静态、不需要 Qt 运行时，
+        # 却能覆盖所有 QML 文件 —— ui-smoke 只在本地跑，这条得留在 CI 里。
+        run: python tools/check_qml_signals.py
