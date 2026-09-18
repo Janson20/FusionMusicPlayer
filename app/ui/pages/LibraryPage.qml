@@ -65,6 +65,8 @@ Item {
                     boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: FluScrollBar { }
 
+                    header: Item { width: 1; height: 2 }
+
                     delegate: Rectangle {
                         id: plDelegate
                         required property var modelData
@@ -146,6 +148,152 @@ Item {
                             onClicked: library.select(modelData.id)
                         }
                     }
+
+                    footer: ColumnLayout {
+                        width: playlistList.width
+                        spacing: 2
+
+                        // ── 网易云歌单 ──────────────────────
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.topMargin: 12
+                            Layout.leftMargin: 4
+                            Layout.rightMargin: 4
+                            Layout.bottomMargin: 4
+                            spacing: 6
+
+                            FluText {
+                                Layout.fillWidth: true
+                                text: account.loggedIn ? "网易云歌单" : ""
+                                font.pixelSize: 11
+                                font.weight: Font.DemiBold
+                                color: Theme.textTertiary
+                                visible: account.loggedIn
+                            }
+                            FluProgressRing {
+                                Layout.preferredWidth: 13
+                                Layout.preferredHeight: 13
+                                Layout.alignment: Qt.AlignVCenter
+                                strokeWidth: 2
+                                visible: library.remoteLoading
+                            }
+                            FluIconButton {
+                                Layout.preferredWidth: 22
+                                Layout.preferredHeight: 22
+                                iconSize: 12
+                                iconSource: FluentIcons.Sync
+                                iconColor: Theme.textTertiary
+                                text: "重新同步歌单"
+                                visible: account.loggedIn
+                                onClicked: account.syncPlaylists()
+                            }
+                        }
+
+                        // 未登录时的引导
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 40
+                            visible: !account.loggedIn
+                            radius: Theme.radiusSmall
+                            color: loginMouse.containsMouse ? Theme.accentSoft : "transparent"
+
+                            FluText {
+                                anchors.centerIn: parent
+                                text: "登录网易云同步歌单"
+                                font.pixelSize: 11
+                                color: Theme.accent
+                            }
+                            MouseArea {
+                                id: loginMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: app.openLogin()
+                            }
+                        }
+
+                        Repeater {
+                            model: library.remotePlaylists
+                            delegate: Rectangle {
+                                id: remoteDelegate
+                                required property var modelData
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 46
+                                radius: Theme.radiusSmall
+                                color: library.selectedId === ("wy:" + modelData.id)
+                                    ? Theme.accentSoft
+                                    : (remoteMouse.containsMouse ? Theme.cardHover : "transparent")
+                                Behavior on color { ColorAnimation { duration: Theme.durationFast } }
+
+                                readonly property bool active: library.selectedId === ("wy:" + modelData.id)
+
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 8
+                                    anchors.rightMargin: 8
+                                    spacing: 10
+
+                                    Item {
+                                        Layout.preferredWidth: 28
+                                        Layout.preferredHeight: 28
+                                        Layout.alignment: Qt.AlignVCenter
+
+                                        CoverArt {
+                                            anchors.fill: parent
+                                            radiusSize: Theme.radiusSmall
+                                            source: modelData.cover
+                                        }
+                                        FluIcon {
+                                            anchors.centerIn: parent
+                                            visible: modelData.cover === ""
+                                            iconSource: FluentIcons.Cloud
+                                            iconSize: 13
+                                            iconColor: remoteDelegate.active
+                                                ? Theme.accentText : Theme.textSecondary
+                                        }
+                                    }
+
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 1
+                                        FluText {
+                                            Layout.fillWidth: true
+                                            text: modelData.name
+                                            font.pixelSize: 12
+                                            font.weight: remoteDelegate.active ? Font.DemiBold : Font.Normal
+                                            color: remoteDelegate.active ? Theme.accent : Theme.textPrimary
+                                            elide: Text.ElideRight
+                                        }
+                                        FluText {
+                                            text: modelData.count + " 首"
+                                            font.pixelSize: 10
+                                            color: Theme.textTertiary
+                                        }
+                                    }
+                                }
+
+                                MouseArea {
+                                    id: remoteMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: library.selectRemote(modelData.id, modelData.name)
+                                }
+                            }
+                        }
+
+                        FluText {
+                            Layout.fillWidth: true
+                            Layout.topMargin: 4
+                            Layout.leftMargin: 6
+                            Layout.rightMargin: 6
+                            visible: account.loggedIn && library.remotePlaylists.length === 0
+                            text: "还没有同步到歌单"
+                            font.pixelSize: 10
+                            color: Theme.textTertiary
+                            wrapMode: Text.WordWrap
+                        }
+                    }
                 }
 
                 FluText {
@@ -187,13 +335,18 @@ Item {
                     anchors.fill: parent
                     anchors.margins: 6
                     model: library.tracksModel
-                    emptyIcon: FluentIcons.Heart
-                    emptyTitle: library.selectedId === "__history__"
-                        ? "还没有播放记录"
-                        : (library.selectedId === "__favorites__"
-                            ? "还没有喜欢的歌曲"
-                            : "这个歌单还是空的")
-                    emptyDescription: "在搜索页或发现页右键歌曲即可添加"
+                    busy: library.selectedIsRemote && library.remoteLoading
+                    emptyIcon: library.selectedIsRemote ? FluentIcons.Cloud : FluentIcons.Heart
+                    emptyTitle: library.selectedIsRemote
+                        ? (library.remoteLoading ? "正在同步歌单…" : "这个歌单没有可显示的歌曲")
+                        : (library.selectedId === "__history__"
+                            ? "还没有播放记录"
+                            : (library.selectedId === "__favorites__"
+                                ? "还没有喜欢的歌曲"
+                                : "这个歌单还是空的"))
+                    emptyDescription: library.selectedIsRemote
+                        ? "部分歌单需要会员权限才能读取完整曲目"
+                        : "在搜索页或发现页右键歌曲即可添加"
                     onTrackActivated: function (index) {
                         player.playTrackInList(library.tracksModel.allItems(), index)
                     }

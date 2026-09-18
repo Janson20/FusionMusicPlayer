@@ -1,4 +1,4 @@
-"""网易云补充接口（发现页 / 歌词翻译）。
+"""网易云补充接口（发现页 / 歌词翻译）与账号信息修正。
 
 FMCL 只用到搜索、播放地址、歌词、歌单与登录；这里在不改动 vendored ``wy.py``
 的前提下，复用它的 eapi 加密通道补齐「发现页」需要的接口。
@@ -13,11 +13,201 @@ FMCL 只用到搜索、播放地址、歌词、歌单与登录；这里在不改
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Tuple
+import time
+from typing import Dict, List, Optional, Tuple
 
 from .base import MusicInfo
+from .wy import NetEaseMusicSource
 
 logger = logging.getLogger(__name__)
+
+
+class NetEaseSource(NetEaseMusicSource):
+    """网易云音源：在 vendored 实现上修正账号会员信息的读取。
+
+    用子类覆盖而不是直接改 ``wy.py``，是为了让那 8 个文件与上游 FMCL 保持
+    逐字一致（见 NOTICE.md），将来重新同步上游不会冲突。
+
+    上游的两个问题（实测 2026-09，SVIP 账号）::
+
+        account.vipType = 11      # 标量
+        profile.vipType = 110     # 位掩码！100|10 = SVIP + 黑胶VIP
+        profile.vipRights = {}    # 该接口下是空对象，associator 等一概没有
+
+    上游只读 ``profile.get("vipType")``，拿到 110；而标签表只有
+    0/1/10/11/20，于是落到默认值「普通用户」。
+
+    这里的做法是先问权威接口 ``/api/music-vip-membership/client/vip/info``，
+    它返回每种会员的 ``vipCode`` 与到期时间，不存在歧义::
+
+        associator   vipCode=100  黑胶VIP
+        musicPackage vipCode=220  音乐包
+        redplus      vipCode=300  黑胶SVIP
+        albumVip     vipCode=400  专辑VIP
+        voiceBookVip vipCode=500  有声书VIP
+
+    拿不到时再退回 ``vipType``，并按位掩码解释（含 100 位即 SVIP）。
+
+    另外 ``get_user_playlists()`` 走的是 ``self.fetch_login_profile()``，
+    覆盖之后它拿到的 user_id 也更稳（``profile.userId`` 缺失时回退 ``account.id``）。
+    """
+
+    # vipCode -> 会员名
+    VIP_CODE_LABELS = {
+        100: "黑胶VIP",
+        220: "音乐包",
+        300: "黑胶SVIP",
+        400: "专辑VIP",
+        500: "有声书VIP",
+    }
+
+    def fetch_login_profile(self) -> Optional[dict]:  # noqa: D102
+        try:
+            resp = self._eapi_post("/api/nuser/account/get", {})  # noqa: SLF001
+        except Exception as e:
+            logger.warning("获取网易云账号信息异常: %s", e)
+            return None
+
+        if not isinstance(resp, dict) or resp.get("code") != 200:
+            logger.debug(
+                "网易获取登录用户信息失败: code=%s",
+                resp.get("code") if isinstance(resp, dict) else resp,
+            )
+            return None
+
+        account = resp.get("account") or {}
+        profile = resp.get("profile") or {}
+        if not account and not profile:
+            # 未登录时这两个字段都是 null
+            return None
+
+        user_id = _to_int(profile.get("userId")) or _to_int(account.get("id"))
+
+        # account.vipType 是标量，profile.vipType 是位掩码，两者含义不同，
+        # 标量优先（与官方客户端一致）
+        vip_type = _to_int(account.get("vipType")) or _to_int(profile.get("vipType"))
+
+        vip = self._fetch_vip_info()
+        if vip:
+            is_svip = vip["is_svip"]
+            has_black_vip = vip["has_black_vip"]
+            has_music_package = vip["has_music_package"]
+            source = "vip_info"
+            extra = {
+                "red_vip_level": vip["red_vip_level"],
+                "red_vip_annual_count": vip["red_vip_annual_count"],
+                "vip_codes": vip["active_codes"],
+            }
+        else:
+            # 权威接口不可用时退回 vipType
+            is_svip, has_black_vip, has_music_package = vip_flags_from_type(vip_type)
+            source = "vip_type"
+            extra = {"red_vip_level": 0, "red_vip_annual_count": 0, "vip_codes": []}
+
+        logger.debug(
+            "网易账号信息: vipType(account=%s / profile=%s) source=%s svip=%s 黑胶=%s 音乐包=%s %s",
+            account.get("vipType"), profile.get("vipType"), source,
+            is_svip, has_black_vip, has_music_package, extra.get("vip_codes"),
+        )
+
+        result = {
+            "nickname": profile.get("nickname", "") or account.get("userName", ""),
+            "avatar_url": profile.get("avatarUrl", ""),
+            "user_id": user_id,
+            "vip_type": vip_type,
+            "has_music_package": has_music_package,
+            "has_black_vip": has_black_vip,
+            "is_svip": is_svip,
+            "vip_source": source,
+        }
+        result.update(extra)
+        return result
+
+    def _fetch_vip_info(self) -> Optional[dict]:
+        """查询会员权益（权威来源）。失败返回 None，由调用方退回 vipType。"""
+        try:
+            resp = self._eapi_post(  # noqa: SLF001
+                "/api/music-vip-membership/client/vip/info", {}
+            )
+        except Exception as e:
+            logger.debug("获取网易云会员信息失败: %s", e)
+            return None
+        if not isinstance(resp, dict) or resp.get("code") != 200:
+            return None
+        data = resp.get("data")
+        if not isinstance(data, dict):
+            return None
+
+        def _active(key: str) -> Optional[dict]:
+            node = data.get(key)
+            if not isinstance(node, dict) or not node.get("vipCode"):
+                return None
+            expire = _to_int(node.get("expireTime"))
+            # expireTime 为 0/缺失时不做判定，避免把永久权益误杀
+            if expire and expire < int(time.time() * 1000):
+                return None
+            return node
+
+        redplus = _active("redplus")
+        associator = _active("associator")
+        music_package = _active("musicPackage")
+
+        # 未开通的会员类型也会带 vipCode 和未来的 expireTime，只有 vipLevel 为 0
+        # 能区分出来（实测 albumVip / voiceBookVip 就是这种形态），
+        # 因此附加信息里再要求 vipLevel > 0。
+        active_codes = {}
+        for key in ("redplus", "associator", "musicPackage", "albumVip", "voiceBookVip"):
+            node = _active(key)
+            if node and _to_int(node.get("vipLevel")) > 0:
+                active_codes[key] = _to_int(node.get("vipCode"))
+
+        return {
+            "is_svip": redplus is not None,
+            "has_black_vip": associator is not None or redplus is not None,
+            "has_music_package": music_package is not None,
+            "red_vip_level": _to_int(data.get("redVipLevel")),
+            "red_vip_annual_count": _to_int(data.get("redVipAnnualCount")),
+            "active_codes": active_codes,
+        }
+
+
+def vip_flags_from_type(vip_type: int) -> Tuple[bool, bool, bool]:
+    """把 ``vipType`` 解析成 ``(is_svip, has_black_vip, has_music_package)``。
+
+    ``vipType`` 有两种编码，实测同一个 SVIP 账号会同时出现::
+
+        account.vipType = 11     # 标量：10 黑胶VIP + 1 音乐包
+        profile.vipType = 110    # 位掩码：100 SVIP + 10 黑胶VIP
+
+    位掩码的位::
+
+        1    音乐包
+        10   黑胶VIP
+        100  黑胶SVIP
+
+    另有文档记载的标量值 20 也表示 SVIP。因为两种编码混在一起，
+    这里按位判断（``0`` 与 ``1`` 单独处理，避免把 0 当成「音乐包」）。
+
+    仅在权威接口 ``/api/music-vip-membership/client/vip/info`` 不可用时才用。
+    """
+    try:
+        v = int(vip_type or 0)
+    except (TypeError, ValueError):
+        v = 0
+    if v <= 0:
+        return False, False, False
+
+    is_svip = bool(v & 100) or v == 20
+    has_black_vip = is_svip or bool(v & 10) or v in (10, 11)
+    has_music_package = bool(v & 1) or v == 1
+    return is_svip, has_black_vip, has_music_package
+
+
+def _to_int(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 def _wy():
     from . import wy_source

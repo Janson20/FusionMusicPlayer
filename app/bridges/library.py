@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from typing import List
+from typing import Dict, List
 
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 class _Emitter(QObject):
     scanProgress = Signal(object)
     scanDone = Signal(object)
+    remoteTracks = Signal(object)
+
 
 class LibraryController(QObject):
     """统一暴露本地音乐数据给 QML。"""
@@ -35,9 +37,12 @@ class LibraryController(QObject):
     historyChanged = Signal()
     localChanged = Signal()
     scanningChanged = Signal()
+    remoteChanged = Signal()
     message = Signal(str)
     errorOccurred = Signal(str)
     selectionChanged = Signal()
+
+    REMOTE_PREFIX = "wy:"
 
     def __init__(self, config, library: Library, parent=None):
         super().__init__(parent)
@@ -46,6 +51,7 @@ class LibraryController(QObject):
         self._emitter = _Emitter(self)
         self._emitter.scanDone.connect(self._on_scan_done)
         self._emitter.scanProgress.connect(self._on_scan_progress)
+        self._emitter.remoteTracks.connect(self._on_remote_tracks)
 
         self._tracks_model = TrackListModel()
         self._favorites_model = TrackListModel()
@@ -53,9 +59,15 @@ class LibraryController(QObject):
         self._local_model = TrackListModel()
 
         self._selected_id: str = ""
+        self._selected_name: str = ""
         self._scanning = False
         self._scan_total = 0
         self._scan_done = 0
+
+        # 网易云歌单（内存态，不落盘）
+        self._remote: List[Dict] = []
+        self._remote_cache: Dict[str, List[Track]] = {}
+        self._remote_loading = False
 
         self._library.add_listener(self._on_library_event)
         self.refresh_all()
@@ -121,13 +133,30 @@ class LibraryController(QObject):
 
     @Property(str, notify=selectionChanged)
     def selectedName(self) -> str:  # noqa: N802
+        if self._selected_name:
+            return self._selected_name
         for p in self.playlists:
             if p["id"] == self._selected_id:
                 return str(p["name"])
         return ""
 
-    @Property(int, notify=selectionChanged)
+    @Property(bool, notify=selectionChanged)
+    def selectedIsRemote(self) -> bool:  # noqa: N802
+        return self._selected_id.startswith(self.REMOTE_PREFIX)
+
+    @Property(bool, notify=remoteChanged)
+    def remoteLoading(self) -> bool:  # noqa: N802
+        return self._remote_loading
+
+    @Property("QVariantList", notify=remoteChanged)
+    def remotePlaylists(self):  # noqa: N802
+        """登录用户的网易云歌单（含「我喜欢的音乐」）。"""
+        return list(self._remote)
+
+    @Property(int, notify=tracksChanged)
     def selectedCount(self) -> int:  # noqa: N802
+        # 注意 notify 用 tracksChanged 而不是 selectionChanged：
+        # 网易云歌单是异步拉取的，曲目到达时只会触发 tracksChanged
         return self._tracks_model.length()
 
     @Property(bool, notify=scanningChanged)
@@ -152,9 +181,103 @@ class LibraryController(QObject):
 
     @Slot(str)
     def select(self, playlist_id: str) -> None:
-        self._selected_id = playlist_id or ""
+        playlist_id = playlist_id or ""
+        if playlist_id.startswith(self.REMOTE_PREFIX):
+            self.selectRemote(playlist_id[len(self.REMOTE_PREFIX):])
+            return
+        self._selected_id = playlist_id
+        self._selected_name = ""
         self._reload_tracks()
         self.selectionChanged.emit()
+
+    # ── 网易云歌单 ──────────────────────────────────────────
+
+    @Slot(object)
+    def setRemotePlaylists(self, items) -> None:
+        """由 AccountManager 推送登录用户的歌单列表。"""
+        out: List[Dict] = []
+        for item in items or []:
+            try:
+                out.append(
+                    {
+                        "id": str(item.get("id") or ""),
+                        "name": str(item.get("name") or ""),
+                        "count": int(item.get("track_count") or 0),
+                        "cover": str(item.get("cover_url") or ""),
+                        "system": False,
+                        "remote": True,
+                        "icon": "Cloud",
+                    }
+                )
+            except Exception:
+                continue
+        self._remote = [x for x in out if x["id"]]
+        # 歌单列表变了，缓存的曲目可能已过期
+        self._remote_cache.clear()
+        self.remoteChanged.emit()
+
+    @Slot(str, str)
+    def selectRemote(self, playlist_id: str, name: str = "") -> None:  # noqa: N802
+        """选中某个网易云歌单，异步拉取其曲目。"""
+        playlist_id = str(playlist_id or "")
+        if not playlist_id:
+            return
+        self._selected_id = self.REMOTE_PREFIX + playlist_id
+        self._selected_name = name or self._name_of_remote(playlist_id)
+        self.selectionChanged.emit()
+
+        cached = self._remote_cache.get(playlist_id)
+        if cached is not None:
+            self._tracks_model.set_tracks(cached)
+            self.tracksChanged.emit()
+            return
+
+        self._tracks_model.clear()
+        self._remote_loading = True
+        self.tracksChanged.emit()
+        self.remoteChanged.emit()
+        threading.Thread(
+            target=self._remote_worker, args=(playlist_id,), daemon=True, name="wy-playlist"
+        ).start()
+
+    def _name_of_remote(self, playlist_id: str) -> str:
+        for p in self._remote:
+            if p["id"] == playlist_id:
+                return str(p["name"])
+        return "网易云歌单"
+
+    def _remote_worker(self, playlist_id: str) -> None:
+        tracks: List[Track] = []
+        error = ""
+        try:
+            from ..sources import netease
+
+            infos = netease.playlist_tracks(playlist_id)
+            tracks = [Track.from_music_info(mi) for mi in (infos or [])]
+        except Exception as e:
+            logger.warning("拉取网易云歌单失败 (%s): %s", playlist_id, e)
+            error = str(e)
+        self._emitter.remoteTracks.emit((playlist_id, tracks, error))
+
+    @Slot(object)
+    def _on_remote_tracks(self, payload) -> None:
+        playlist_id, tracks, error = payload
+        self._remote_loading = False
+        self.remoteChanged.emit()
+
+        if not error:
+            self._remote_cache[playlist_id] = list(tracks)
+
+        # 期间用户可能已经切走了
+        if self._selected_id != self.REMOTE_PREFIX + playlist_id:
+            return
+
+        self._tracks_model.set_tracks(tracks)
+        self.tracksChanged.emit()
+        if error:
+            self.errorOccurred.emit(f"拉取歌单失败：{error}")
+        elif not tracks:
+            self.message.emit("这个歌单没有可显示的歌曲")
 
     def _reload_tracks(self) -> None:
         pid = self._selected_id

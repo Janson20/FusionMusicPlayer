@@ -391,7 +391,7 @@ FluWindow {
                                 }
                                 FluText {
                                     text: account.loggedIn
-                                        ? account.vipLabel + " · UID " + account.userId
+                                        ? account.vipDetail
                                         : "登录后可播放 VIP 歌曲、同步歌单、获取翻译歌词"
                                     font.pixelSize: 11
                                     color: Theme.textTertiary

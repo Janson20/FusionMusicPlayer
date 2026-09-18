@@ -44,7 +44,9 @@ RESOLVE_SEARCH_LIMIT = 20
 RESOLVE_QUALITY_ORDER = ["flac", "320k", "128k"]
 
 _BUILDERS = {
-    "wy": ("wy", "NetEaseMusicSource"),
+    # 网易云用 app/sources/netease.py 里的子类：它修正了上游把 vipType 读在
+    # profile 上的问题（实际在 account 上，导致 VIP/SVIP 显示成普通用户）
+    "wy": ("netease", "NetEaseSource"),
     "tx": ("tx", "QQMusicSource"),
     "kw": ("kw", "KuWoMusicSource"),
     "kg": ("kg", "KuGouMusicSource"),

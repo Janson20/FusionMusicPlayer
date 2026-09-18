@@ -23,6 +23,7 @@ from typing import Any, Dict, Optional
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
 from .. import paths
+from ..paths import APP_VERSION
 from ..security import vault
 from ..security.vault import VaultError
 from ..sources import (
@@ -52,12 +53,16 @@ QR_SUCCESS = 803
 PROVIDER = "netease"
 MUSIC_U_TTL_SECONDS = 180 * 24 * 3600  # MUSIC_U 的 Max-Age 约 180 天
 
+# 网易云会员标识（vipCode / vipType 位掩码都归一到这几个名字）
 VIP_LABELS = {
     0: "普通用户",
     1: "音乐包",
     10: "黑胶VIP",
     11: "黑胶VIP",
     20: "黑胶SVIP",
+    100: "黑胶VIP",
+    220: "音乐包",
+    300: "黑胶SVIP",
 }
 
 class _Emitter(QObject):
@@ -102,6 +107,10 @@ class AccountManager(QObject):
         self._user_id = 0
         self._vip_type = 0
         self._has_music_package = False
+        self._has_black_vip = False
+        self._is_svip = False
+        self._red_vip_level = 0
+        self._red_vip_annual_count = 0
         self._remote_playlists: list = []
 
     # ── 属性 ────────────────────────────────────────────────
@@ -138,13 +147,47 @@ class AccountManager(QObject):
     def vipLabel(self) -> str:  # noqa: N802
         if not self._logged_in:
             return ""
-        if self._has_music_package and self._vip_type in (0, 1):
-            return VIP_LABELS[1]
+        if self._is_svip:
+            label = VIP_LABELS[300]
+            if self._red_vip_level > 0:
+                label += f" Lv{self._red_vip_level}"
+            return label
+        if self._has_black_vip or (self._vip_type & 10) == 10 or self._vip_type in (10, 11):
+            return VIP_LABELS[100]
+        if self._has_music_package or (self._vip_type & 1) == 1 or self._vip_type == 1:
+            return VIP_LABELS[220]
         return VIP_LABELS.get(self._vip_type, "普通用户")
 
     @Property(bool, notify=profileChanged)
     def isVip(self) -> bool:  # noqa: N802
-        return self._vip_type >= 10 or self._has_music_package
+        return self._is_svip or self._has_black_vip or self._has_music_package
+
+    @Property(bool, notify=profileChanged)
+    def isSvip(self) -> bool:  # noqa: N802
+        return self._is_svip
+
+    @Property(int, notify=profileChanged)
+    def vipType(self) -> int:  # noqa: N802
+        return self._vip_type
+
+    @Property(str, notify=profileChanged)
+    def vipDetail(self) -> str:  # noqa: N802
+        """给设置页用的权益明细，方便排查识别问题。"""
+        if not self._logged_in:
+            return ""
+        parts = []
+        if self._is_svip:
+            parts.append("黑胶SVIP")
+        elif self._has_black_vip:
+            parts.append("黑胶VIP")
+        if self._has_music_package:
+            parts.append("音乐包")
+        if self._red_vip_level > 0:
+            parts.append(f"等级 Lv{self._red_vip_level}")
+        if self._red_vip_annual_count > 0:
+            parts.append("年费")
+        detail = " · ".join(parts) if parts else "无会员权益"
+        return f"{detail}（vipType={self._vip_type}）"
 
     @Property("QVariantList", notify=playlistsChanged)
     def remotePlaylists(self):  # noqa: N802
@@ -205,8 +248,7 @@ class AccountManager(QObject):
         self._nickname = str(payload.get("nickname") or "")
         self._avatar = str(payload.get("avatar_url") or "")
         self._user_id = int(payload.get("user_id") or 0)
-        self._vip_type = int(payload.get("vip_type") or 0)
-        self._has_music_package = bool(payload.get("has_music_package"))
+        self._apply_vip_fields(payload)
         self._set_status("已登录")
         self.loggedInChanged.emit()
         self.profileChanged.emit()
@@ -214,6 +256,20 @@ class AccountManager(QObject):
 
         # 服务端校验 + 拉取歌单（异步，不阻塞启动）
         threading.Thread(target=self._refresh_worker, daemon=True, name="wy-refresh").start()
+
+    def _apply_vip_fields(self, profile: dict) -> None:
+        """从（凭据或接口返回的）profile 里取出会员字段。
+
+        ``is_svip`` / ``has_black_vip`` 由音源层依据权威接口
+        ``/api/music-vip-membership/client/vip/info`` 的 vipCode 判定，
+        这里只负责落库与派生。
+        """
+        self._vip_type = int(profile.get("vip_type") or 0)
+        self._has_music_package = bool(profile.get("has_music_package"))
+        self._has_black_vip = bool(profile.get("has_black_vip"))
+        self._is_svip = bool(profile.get("is_svip"))
+        self._red_vip_level = int(profile.get("red_vip_level") or 0)
+        self._red_vip_annual_count = int(profile.get("red_vip_annual_count") or 0)
 
     # ── 扫码登录 ────────────────────────────────────────────
 
@@ -479,9 +535,15 @@ class AccountManager(QObject):
             "has_music_package": bool(
                 profile.get("has_music_package", self._has_music_package)
             ),
+            "has_black_vip": bool(profile.get("has_black_vip", self._has_black_vip)),
+            "is_svip": bool(profile.get("is_svip", self._is_svip)),
+            "red_vip_level": int(profile.get("red_vip_level") or self._red_vip_level or 0),
+            "red_vip_annual_count": int(
+                profile.get("red_vip_annual_count") or self._red_vip_annual_count or 0
+            ),
             "obtained_at": int(time.time()),
             "expires_at": int(time.time()) + MUSIC_U_TTL_SECONDS,
-            "app_version": "1.0.0",
+            "app_version": APP_VERSION,
         }
         try:
             ok = vault.save(payload)
@@ -508,12 +570,16 @@ class AccountManager(QObject):
             if self._logged_in:
                 self._set_status("登录状态可能已失效")
                 self.errorOccurred.emit("服务端校验未通过，请尝试重新登录")
+            else:
+                # 即使拿不到账号信息也试着同步歌单（会话可能是有效的）
+                threading.Thread(
+                    target=self._playlists_worker, daemon=True, name="wy-playlists"
+                ).start()
             return
         self._nickname = str(profile.get("nickname") or "")
         self._avatar = str(profile.get("avatar_url") or "")
         self._user_id = int(profile.get("user_id") or 0)
-        self._vip_type = int(profile.get("vip_type") or 0)
-        self._has_music_package = bool(profile.get("has_music_package"))
+        self._apply_vip_fields(profile)
         self._set_status("已登录")
         self.profileChanged.emit()
         # 用服务端返回的完整信息覆盖一次凭据
@@ -525,17 +591,31 @@ class AccountManager(QObject):
                 "avatar_url": self._avatar,
                 "vip_type": self._vip_type,
                 "has_music_package": self._has_music_package,
+                "has_black_vip": self._has_black_vip,
+                "is_svip": self._is_svip,
+                "red_vip_level": self._red_vip_level,
+                "red_vip_annual_count": self._red_vip_annual_count,
             },
         )
         threading.Thread(target=self._playlists_worker, daemon=True, name="wy-playlists").start()
 
     def _playlists_worker(self) -> None:
         try:
-            items = wy_get_user_playlists() or []
+            items = wy_get_user_playlists()
         except Exception as e:
-            logger.debug("拉取用户歌单失败: %s", e)
-            items = []
-        self._emitter.playlistsDone.emit(items)
+            logger.warning("拉取网易云歌单失败: %s", e)
+            items = None
+        self._emitter.playlistsDone.emit(items if items is not None else [])
+
+    @Slot()
+    def syncPlaylists(self) -> None:  # noqa: N802
+        """手动重新同步网易云歌单。"""
+        if not self._logged_in:
+            self.errorOccurred.emit("请先登录网易云账号")
+            return
+        self._set_busy(True)
+        self._set_status("正在同步歌单…")
+        threading.Thread(target=self._playlists_worker, daemon=True, name="wy-playlists").start()
 
     @Slot(object)
     def _on_playlists_done(self, items) -> None:
@@ -557,6 +637,10 @@ class AccountManager(QObject):
         self._user_id = 0
         self._vip_type = 0
         self._has_music_package = False
+        self._has_black_vip = False
+        self._is_svip = False
+        self._red_vip_level = 0
+        self._red_vip_annual_count = 0
         self._remote_playlists = []
         self._qr_image = ""
         self._set_status("已退出登录")

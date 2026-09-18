@@ -158,7 +158,8 @@ class Application(QObject):
 
     @Slot()
     def _on_remote_playlists(self) -> None:
-        self.discover.setRemotePlaylists(self.account.remotePlaylists)
+        # 网易云歌单展示在「我的音乐」的左栏里
+        self.library_bridge.setRemotePlaylists(self.account.remotePlaylists)
 
     @Slot(object)
     def _on_qml_warning(self, warnings) -> None:

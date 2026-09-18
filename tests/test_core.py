@@ -297,6 +297,34 @@ def test_format_duration():
     assert format_duration("bad") == "0:00"
 
 
+# ──────────────────────────────────────────────────────────────
+# 网易云会员识别
+# ──────────────────────────────────────────────────────────────
+
+
+def test_vip_flags_from_type():
+    from app.sources.netease import vip_flags_from_type
+
+    # 未登录 / 无会员
+    assert vip_flags_from_type(0) == (False, False, False)
+    assert vip_flags_from_type(None) == (False, False, False)
+    assert vip_flags_from_type("bad") == (False, False, False)
+
+    # account.vipType 是标量：11 = 黑胶VIP + 音乐包
+    assert vip_flags_from_type(11) == (False, True, True)
+    assert vip_flags_from_type(10) == (False, True, False)
+    assert vip_flags_from_type(1) == (False, False, True)
+
+    # profile.vipType 是位掩码：110 = SVIP | 黑胶VIP
+    # 上游只读这个字段，拿 110 去查标签表落到「普通用户」——就是这个 bug
+    assert vip_flags_from_type(110) == (True, True, False)
+    assert vip_flags_from_type(100) == (True, True, False)
+    assert vip_flags_from_type(111) == (True, True, True)
+
+    # 文档记载的标量 20 也是 SVIP
+    assert vip_flags_from_type(20) == (True, True, False)
+
+
 if __name__ == "__main__":
     import traceback
 

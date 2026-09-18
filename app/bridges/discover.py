@@ -200,30 +200,3 @@ class DiscoverController(QObject):
         self._detail_model.clear()
         self._detail_loading = False
         self.detailChanged.emit()
-
-    # ── 网易云账号歌单 ──────────────────────────────────────
-
-    @Slot(object)
-    def setRemotePlaylists(self, items) -> None:
-        """由 AccountManager 推送登录用户歌单（内存态，不落盘）。"""
-        out: List[Dict] = []
-        for item in items or []:
-            try:
-                out.append(
-                    {
-                        "id": str(item.get("id")),
-                        "name": str(item.get("name") or ""),
-                        "cover": str(item.get("cover_url") or ""),
-                        "track_count": int(item.get("track_count") or 0),
-                        "source": "wy",
-                        "remote": True,
-                    }
-                )
-            except Exception:
-                continue
-        self._remote_items = out
-        self.dataChanged.emit()
-
-    @Property("QVariantList", notify=dataChanged)
-    def remotePlaylists(self):  # noqa: N802
-        return list(getattr(self, "_remote_items", []) or [])
