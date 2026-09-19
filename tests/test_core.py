@@ -353,6 +353,32 @@ def test_credential_renew_window():
     assert COOKIE_TTL_SECONDS == 180 * 24 * 3600
 
 
+def test_album_title_matching():
+    """专辑名核对：别的音源的 album_id 撞车时不能认（见 AlbumController）。"""
+    from app.sources.netease import pick_album, same_title
+
+    assert same_title("我是初音未来", "我是初音未来") is True
+    assert same_title("我是初音未来 ", " 我是初音未来") is True      # 空白无关
+    assert same_title("ABC", "abc") is True                          # 大小写无关
+    assert same_title("我是初音未来", "我是初音未来（Deluxe）") is True  # 包含关系
+    assert same_title("我是初音未来", "我是秦始皇") is False
+    assert same_title("", "我是初音未来") is False
+    assert same_title(None, None) is False
+
+    albums = [
+        {"id": "1", "name": "我是初音未来", "size": 2},
+        {"id": "2", "name": "我是初音未来", "size": 12},
+        {"id": "3", "name": "我是秦始皇", "size": 2},
+    ]
+    # 同名多张取曲目多的（通常是原版专辑，不是单曲版）
+    assert pick_album(albums, "我是初音未来")["id"] == "2"
+    # 名字互相包含也能挑中
+    assert pick_album(albums, "初音")["id"] == "2"
+    # 完全对不上时退化成第一个
+    assert pick_album(albums, "完全无关的名字")["id"] == "1"
+    assert pick_album([], "x") == {}
+
+
 if __name__ == "__main__":
     import traceback
 

@@ -662,6 +662,168 @@ def _artist_page_uncached(artist_id: str, name: str) -> Dict:
     }
     return page
 
+# ──────────────────────────────────────────────────────────────
+# 专辑页
+# ──────────────────────────────────────────────────────────────
+
+_ALBUM_CACHE: Dict[str, Dict] = {}
+_ALBUM_CACHE_LOCK = threading.Lock()
+
+# 专辑类型 -> 中文标签
+ALBUM_TYPE_LABELS = {
+    "album": "专辑",
+    "single": "单曲",
+    "ep": "EP",
+    "compilation": "精选集",
+    "live": "现场",
+}
+
+def same_title(left: str, right: str) -> bool:
+    """两个名字是不是同一个（忽略空白与大小写，允许包含关系）。
+
+    用来核对「别的音源的专辑 id 撞到网易云某张专辑」这种情况：id 查出来的
+    专辑名如果跟曲目里的专辑名对不上，就不能用这个 id。
+    """
+    a = "".join(str(left or "").split()).lower()
+    b = "".join(str(right or "").split()).lower()
+    if not a or not b:
+        return False
+    return a == b or a in b or b in a
+
+def search_albums(keyword: str, limit: int = 10) -> List[Dict]:
+    """按关键词搜索专辑（``/api/search/get`` type=10）。"""
+    keyword = (keyword or "").strip()
+    src = _wy()
+    if not keyword or src is None:
+        return []
+    resp = _safe(
+        lambda: src._eapi_post(  # noqa: SLF001
+            "/api/search/get",
+            {"s": keyword, "type": 10, "limit": int(limit), "offset": 0},
+        ),
+        {},
+    ) or {}
+    out: List[Dict] = []
+    for item in ((resp.get("result") or {}).get("albums") or []):
+        try:
+            artist = item.get("artist") or {}
+            out.append(
+                {
+                    "id": str(item.get("id") or ""),
+                    "name": str(item.get("name") or ""),
+                    "cover": str(item.get("picUrl") or ""),
+                    "artist_id": str(artist.get("id") or ""),
+                    "artist_name": str(artist.get("name") or ""),
+                    "size": _to_int(item.get("size")),
+                    "publish_time": _to_int(item.get("publishTime")),
+                    "company": str(item.get("company") or ""),
+                }
+            )
+        except Exception:
+            continue
+    return [a for a in out if a["id"]]
+
+def pick_album(albums: List[Dict], name: str) -> Dict:
+    """在搜索结果里挑最像的那张专辑：同名 > 歌手也同名 > 名字互相包含 > 第一个。"""
+    if not albums:
+        return {}
+    wanted = (name or "").strip().lower()
+    if not wanted:
+        return dict(albums[0])
+    exact = [a for a in albums if str(a.get("name", "")).lower() == wanted]
+    if exact:
+        # 同名的多张里挑曲目多的（通常才是「原版专辑」）
+        return dict(max(exact, key=lambda a: _to_int(a.get("size"))))
+    loose = [
+        a
+        for a in albums
+        if wanted in str(a.get("name", "")).lower() or str(a.get("name", "")).lower() in wanted
+    ]
+    if loose:
+        return dict(max(loose, key=lambda a: _to_int(a.get("size"))))
+    return dict(albums[0])
+
+def album_page(album_id: str = "", name: str = "", artist: str = "") -> Dict:
+    """专辑页所需的全部数据：专辑信息 + 曲目列表。
+
+    只给名字时先搜 id（点歌曲里的专辑名走这条路），给了 id 就直接取详情。
+    返回 ``{"id","name","cover","artist_names","artists","publish_text","company",
+    "type_text","size","description","songs": [MusicInfo]}``；找不到返回 ``{}``。
+    """
+    album_id = str(album_id or "").strip()
+    name = str(name or "").strip()
+    if not album_id and not name:
+        return {}
+    if album_id:
+        with _ALBUM_CACHE_LOCK:
+            cached = _ALBUM_CACHE.get(album_id)
+        if cached is not None:
+            return dict(cached)
+
+    page = _safe(lambda: _album_page_uncached(album_id, name, artist), {}) or {}
+    if page and page.get("id"):
+        with _ALBUM_CACHE_LOCK:
+            if len(_ALBUM_CACHE) >= _ARTIST_CACHE_LIMIT:
+                _ALBUM_CACHE.clear()
+            _ALBUM_CACHE[str(page["id"])] = dict(page)
+    return page
+
+def _album_page_uncached(album_id: str, name: str, artist: str) -> Dict:
+    src = _wy()
+    if src is None:
+        return {}
+
+    match = search_albums(name, 10) if name else []
+    if not album_id:
+        picked = pick_album(match, name)
+        album_id = str(picked.get("id") or "")
+    if not album_id:
+        return {}
+
+    resp = _safe(lambda: src._eapi_post(f"/api/v1/album/{album_id}", {}), {}) or {}  # noqa: SLF001
+    album = resp.get("album") or {}
+    if not album:
+        return {}
+
+    artists = album.get("artists") or album.get("artist") or []
+    if isinstance(artists, dict):
+        artists = [artists]
+    names = [str(a.get("name") or "") for a in artists if isinstance(a, dict)]
+    names = [n for n in names if n]
+
+    publish_ms = _to_int(album.get("publishTime"))
+    page = {
+        "id": str(album.get("id") or album_id),
+        "name": str(album.get("name") or name or ""),
+        "cover": str(album.get("picUrl") or ""),
+        "artists": [
+            {"id": str(a.get("id") or ""), "name": str(a.get("name") or "")}
+            for a in artists
+            if isinstance(a, dict) and a.get("name")
+        ],
+        "artist_names": "、".join(names),
+        "artist_hint": artist,
+        "publish_time": publish_ms,
+        "publish_text": _format_date(publish_ms),
+        "company": str(album.get("company") or ""),
+        "type_text": ALBUM_TYPE_LABELS.get(
+            str(album.get("type") or "").strip().lower(), str(album.get("type") or "")
+        ),
+        "size": _to_int(album.get("size")),
+        "description": str(album.get("description") or album.get("briefDesc") or ""),
+        "songs": _parse_songs(src, resp.get("songs") or []),
+    }
+    return page
+
+def _format_date(ms: int) -> str:
+    """毫秒时间戳 -> ``2025-04-01``（0 或非法返回空串）。"""
+    if ms <= 0:
+        return ""
+    try:
+        return time.strftime("%Y-%m-%d", time.localtime(ms / 1000))
+    except (OverflowError, OSError, ValueError):
+        return ""
+
 def _parse_songs(src, songs) -> List[MusicInfo]:
     """把网易云歌曲 JSON 转成 ``MusicInfo``（优先复用音源自身的解析器）。"""
     if not songs:

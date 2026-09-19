@@ -252,7 +252,7 @@ Item {
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: artist.openArtist(search.topArtist.id, search.topArtist.name)
+                    onClicked: artist.openById(search.topArtist.id, search.topArtist.name)
                 }
             }
 

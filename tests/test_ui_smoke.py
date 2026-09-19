@@ -11,7 +11,9 @@
 4. 展开播放页（``panels/NowPlayingPanel.qml``）：空白处会把鼠标事件放过去、
    点到底下的导航栏，隐藏歌词后封面区赖在左边，歌词写死靠左；
 5. 歌手页（``panels/ArtistDetailPanel.qml``）：点歌手名进不去、或者点歌手名
-   顺带把整行点播了（整行的 MouseArea 压在歌手名链接上面）。
+   顺带把整行点播了（整行的 MouseArea 压在歌手名链接上面）；
+6. 专辑页（``panels/AlbumDetailPanel.qml``）：同上，另外专辑页必须盖在歌单页
+   之上、歌手页必须盖在专辑页之上，否则点进去是个看不见的页面。
 
 无显示环境（CI）下需要一个虚拟屏幕::
 
@@ -348,8 +350,8 @@ class UiProbe(Application):
         if card is not None:
             self.click_item(card)
             check("点置顶卡片打开歌手页",
-                  self.artist.opened and self.artist.artistId == "33699297",
-                  f"id={self.artist.artistId!r}")
+                  self.artist.opened and self.artist.pageId == "33699297",
+                  f"id={self.artist.pageId!r}")
             self.artist.close()
             self.pump(500)
 
@@ -376,6 +378,84 @@ class UiProbe(Application):
         check("找不到歌手时不会卡在加载中",
               settled and not self.artist.opened,
               f"loading={self.artist.loading} opened={self.artist.opened}")
+
+        self.search.clear()
+        self.pump(400)
+
+        self.step_album()
+
+    # ── 专辑页 ──────────────────────────────────────────────
+    def step_album(self):
+        """专辑页：点专辑名进得去、行内其它位置仍然播放、展开页与播放栏也能进。
+
+        和歌手页一样用注入数据，不依赖联网。
+        """
+        self.eval_js("app.go('search')")
+        self.pump(500)
+        self.inject_search_rows()
+        self.pump(700)
+
+        row = self.top_row()
+        check("搜索列表渲染出曲目行（专辑页用）", row is not None)
+        if row is None:
+            self.step_signal_params()
+            return
+
+        album_links = self.find_items("trackRowAlbumLink", row)
+        check("曲目行里的专辑名可以点", len(album_links) > 0, f"{len(album_links)} 个")
+        playing_before = self.current_track()
+        if album_links:
+            self.click_item(album_links[0])
+            check("点专辑名打开专辑页", self.album.opened)
+            check("点专辑名不会顺带播放", self.current_track() == playing_before,
+                  f"{playing_before!r} -> {self.current_track()!r}")
+
+        back = self.item("albumBackButton")
+        check("专辑页找得到返回按钮", back is not None)
+        if back is not None:
+            self.click_item(back)
+            self.pump(700)
+            check("点返回关闭专辑页", not self.album.opened)
+
+        # 行内其它位置仍然是「播放整行」
+        row = self.top_row()
+        if row is not None:
+            self.click_scene(row, 120, 26)
+            self.pump(1200)
+            check("点行内其它位置仍然是播放（专辑）",
+                  self.current_track() == "测试歌曲 A", f"{self.current_track()!r}")
+            check("点行内其它位置不会打开专辑页", not self.album.opened)
+
+        # 播放栏的专辑名
+        bar_album = self.item("playerBarAlbumLink")
+        check("播放栏里的专辑名可以点", bar_album is not None)
+        if bar_album is not None:
+            self.click_item(bar_album)
+            check("点播放栏专辑名打开专辑页", self.album.opened)
+            self.album.close()
+            self.pump(500)
+
+        # 展开播放页的专辑名：先收起展开页，再进专辑页
+        self.eval_js("app.setExpanded(true)")
+        self.pump(900)
+        np_album = self.item("nowPlayingAlbumLink")
+        check("展开播放页里的专辑名可以点", np_album is not None)
+        if np_album is not None:
+            self.click_item(np_album)
+            check("点展开页的专辑名会先收起展开页",
+                  not self.eval_value("app.expanded", True))
+            check("展开页点专辑名也能进专辑页", self.album.opened)
+            self.album.close()
+            self.pump(500)
+            self.eval_js("app.setExpanded(false)")
+            self.pump(400)
+
+        # 找不到的专辑：不能卡在加载中
+        self.album.openByName("zzz 不存在的专辑 zzz")
+        settled = self.wait_until(lambda: not self.album.loading, 10000)
+        check("找不到专辑时不会卡在加载中",
+              settled and not self.album.opened,
+              f"loading={self.album.loading} opened={self.album.opened}")
 
         self.search.clear()
         self.pump(400)

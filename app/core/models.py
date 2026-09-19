@@ -187,6 +187,7 @@ def role_names() -> List[bytes]:
         b"name",
         b"singer",
         b"album",
+        b"albumId",
         b"interval",
         b"durationText",
         b"cover",
@@ -243,6 +244,8 @@ class TrackListModel(QAbstractListModel):
                 return t.is_original
             if key == "originalName":
                 return t.original_name
+            if key == "albumId":
+                return t.album_id
             if key == "qualities":
                 return t.quality_list
             if key == "bestQuality":

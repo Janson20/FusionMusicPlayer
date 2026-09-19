@@ -160,13 +160,23 @@ Rectangle {
                     }
 
                     FluText {
+                        objectName: "playerBarAlbumLink"
                         Layout.fillWidth: true
                         Layout.alignment: Qt.AlignVCenter
                         visible: player.album !== ""
                         text: (player.artist !== "" ? "  ·  " : "") + player.album
                         font.pixelSize: 11
-                        color: Theme.textTertiary
+                        font.underline: barAlbumMouse.containsMouse
+                        color: barAlbumMouse.containsMouse ? Theme.accent : Theme.textTertiary
                         elide: Text.ElideRight
+
+                        MouseArea {
+                            id: barAlbumMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: album.openById(player.albumId, player.album)
+                        }
                     }
                 }
 

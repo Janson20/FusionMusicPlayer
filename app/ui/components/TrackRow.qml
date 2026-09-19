@@ -21,6 +21,7 @@ Rectangle {
     required property string name
     required property string singer
     required property string album
+    required property string albumId
     required property string durationText
     required property string cover
     required property string sourceText
@@ -42,6 +43,7 @@ Rectangle {
     signal activated
     signal favoriteRequested
     signal artistRequested(string name)
+    signal albumRequested(string albumId, string albumName)
     signal menuRequested(real globalX, real globalY)
 
     height: 52
@@ -181,14 +183,26 @@ Rectangle {
                 }
 
                 FluText {
-                    Layout.fillWidth: true
+                    objectName: "trackRowAlbumLink"
                     Layout.alignment: Qt.AlignVCenter
+                    Layout.maximumWidth: 240
                     visible: control.showAlbum && control.album !== ""
                     text: (control.singer !== "" ? "  ·  " : "") + control.album
                     font.pixelSize: 11
-                    color: Theme.textTertiary
+                    font.underline: albumMouse.containsMouse
+                    color: albumMouse.containsMouse ? Theme.accent : Theme.textTertiary
                     elide: Text.ElideRight
+
+                    MouseArea {
+                        id: albumMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: control.albumRequested(control.albumId, control.album)
+                    }
                 }
+
+                Item { Layout.fillWidth: true }
             }
         }
 

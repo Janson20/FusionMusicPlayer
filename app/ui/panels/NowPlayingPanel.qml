@@ -41,6 +41,15 @@ Item {
         artist.openByName(name)
     }
 
+    // 点专辑名进专辑页，同上
+    function openAlbum() {
+        if (player.album === "")
+            return
+        if (app.expanded)
+            app.setExpanded(false)
+        album.openById(player.albumId, player.album)
+    }
+
     // ── 事件遮罩 ────────────────────────────────────────
     // 面板根节点只是个普通 Item：空白处不处理鼠标事件，事件会继续往下找
     // 能接收的项，于是会穿透到底下的导航栏 / 页面 / 播放栏（展开态能点到
@@ -211,6 +220,27 @@ Item {
                                 onClicked: control.openArtist(modelData)
                             }
                         }
+                    }
+                }
+
+                // 专辑名可点（进专辑页）
+                FluText {
+                    objectName: "nowPlayingAlbumLink"
+                    Layout.alignment: Qt.AlignHCenter
+                    Layout.maximumWidth: 340
+                    visible: player.album !== ""
+                    text: player.album
+                    font.pixelSize: 12
+                    font.underline: npAlbumMouse.containsMouse
+                    color: npAlbumMouse.containsMouse ? Theme.accent : Theme.textTertiary
+                    elide: Text.ElideRight
+
+                    MouseArea {
+                        id: npAlbumMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: control.openAlbum()
                     }
                 }
 

@@ -17,6 +17,9 @@ FluMenu {
 
     readonly property var artistNames: ArtistNames.split(trackData && trackData.singer
                                                          ? trackData.singer : "")
+    readonly property string albumName: trackData && trackData.album ? String(trackData.album) : ""
+    readonly property string albumId: trackData && trackData.album_id
+        ? String(trackData.album_id) : ""
 
     signal playNow
     signal playNext
@@ -24,6 +27,7 @@ FluMenu {
     signal toggleFav
     signal addToPlaylist(string playlistId)
     signal viewArtist(string name)
+    signal viewAlbum(string albumId, string albumName)
     signal copyInfo
 
     width: 208
@@ -84,6 +88,13 @@ FluMenu {
                 }
             }
         }
+    }
+
+    FluMenuItem {
+        text: control.albumName !== "" ? ("查看专辑 · " + control.albumName) : "查看专辑"
+        visible: control.albumName !== ""
+        enabled: control.albumId !== "" || control.albumName !== ""
+        onClicked: control.viewAlbum(control.albumId, control.albumName)
     }
 
     FluMenuSeparator {}

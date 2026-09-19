@@ -1,43 +1,48 @@
-﻿import QtQuick
+import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import FluentUI
 import ".."
 import "../components"
-import "../ArtistNames.js" as ArtistNames
 
 /*!
-    歌手详情覆盖层：头像 / 数据 / 简介 + 热门歌曲。
+    专辑详情覆盖层：封面 / 专辑名 / 歌手 / 发行信息 + 曲目列表。
 
-    数据来自 ``ArtistController``（点任意地方的歌手名都会打开它）。
-    版式参照网易云的歌手页，但只保留真正接得上的部分：热门歌曲、播放全部。
-    专辑 / MV / 相似歌手没有做（需要额外的详情页承接，另开一轮再说）。
+    数据来自 ``AlbumController``（点任意地方的专辑名都会打开它）。
+    版式参照网易云的专辑页，但只做「歌曲」这一页 —— 评论 / 专辑详情这些
+    需要评论接口与富文本，暂不做。
 */
 Item {
     id: control
 
-    objectName: "artistDetailPanel"
+    objectName: "albumDetailPanel"
 
     signal closeRequested
 
-    readonly property var meta: artist.meta
+    readonly property var meta: album.meta
 
-    // 别名 / 单曲·专辑·MV·粉丝，都在这里拼好，界面上直接显示
-    readonly property string aliasText: {
-        var alias = meta.alias !== undefined && meta.alias !== null ? meta.alias : []
-        return alias.length > 0 ? "别名：" + alias.join(" / ") : ""
+    // 歌手（可点，进歌手页）
+    readonly property var artistNames: {
+        var list = meta.artists !== undefined && meta.artists !== null ? meta.artists : []
+        return list
     }
 
+    // 「2025-04-01 发布」这一行
+    readonly property string subtitle: {
+        if (meta.publish_text !== undefined && meta.publish_text !== "")
+            return meta.publish_text + " 发布"
+        return ""
+    }
+
+    // 「单曲 · 旧时约定 · 2 首」
     readonly property string statsText: {
         var parts = []
-        if (meta.music_size !== undefined && meta.music_size > 0)
-            parts.push("单曲 " + meta.music_size)
-        if (meta.album_size !== undefined && meta.album_size > 0)
-            parts.push("专辑 " + meta.album_size)
-        if (meta.mv_size !== undefined && meta.mv_size > 0)
-            parts.push("MV " + meta.mv_size)
-        if (meta.fans_size !== undefined && meta.fans_size > 0)
-            parts.push("粉丝 " + ArtistNames.formatCount(meta.fans_size))
+        if (meta.type_text !== undefined && meta.type_text !== "")
+            parts.push(meta.type_text)
+        if (meta.company !== undefined && meta.company !== "")
+            parts.push(meta.company)
+        if (album.model.count > 0)
+            parts.push(album.model.count + " 首")
         return parts.join("  ·  ")
     }
 
@@ -45,7 +50,7 @@ Item {
     // 和其它覆盖层同一个坑：普通 Item 的空白处不吃鼠标事件，会点穿到底下的
     // 导航栏 / 页面。必须声明在其它子项之前，可交互控件才仍然优先拿到事件。
     MouseArea {
-        objectName: "artistDetailBlocker"
+        objectName: "albumDetailBlocker"
         anchors.fill: parent
         acceptedButtons: Qt.AllButtons
         onWheel: function (wheel) { wheel.accepted = true }
@@ -67,7 +72,7 @@ Item {
             spacing: 10
 
             FluIconButton {
-                objectName: "artistBackButton"
+                objectName: "albumBackButton"
                 Layout.preferredWidth: 34
                 Layout.preferredHeight: 34
                 Layout.alignment: Qt.AlignVCenter
@@ -80,7 +85,7 @@ Item {
 
             FluText {
                 Layout.alignment: Qt.AlignVCenter
-                text: "歌手"
+                text: "专辑"
                 font.pixelSize: 12
                 color: Theme.textSecondary
             }
@@ -92,21 +97,20 @@ Item {
                 Layout.preferredHeight: 20
                 Layout.alignment: Qt.AlignVCenter
                 strokeWidth: 3
-                visible: artist.loading
+                visible: album.loading
             }
         }
 
-        // ── 歌手信息头 ──────────────────────────────────────
+        // ── 专辑信息头 ──────────────────────────────────────
         RowLayout {
             Layout.fillWidth: true
             spacing: 20
 
-            // 圆形头像
             Rectangle {
-                Layout.preferredWidth: 132
-                Layout.preferredHeight: 132
+                Layout.preferredWidth: 148
+                Layout.preferredHeight: 148
                 Layout.alignment: Qt.AlignTop
-                radius: 66
+                radius: Theme.radiusLarge
                 color: Theme.cardBg
                 border.width: 1
                 border.color: Theme.border
@@ -114,17 +118,17 @@ Item {
 
                 Image {
                     anchors.fill: parent
-                    source: artist.meta.cover !== undefined ? artist.meta.cover : ""
+                    source: meta.cover !== undefined ? meta.cover : ""
                     visible: source !== ""
                     fillMode: Image.PreserveAspectCrop
-                    sourceSize.width: 264
-                    sourceSize.height: 264
+                    sourceSize.width: 296
+                    sourceSize.height: 296
                 }
 
                 FluIcon {
                     anchors.centerIn: parent
-                    visible: !(artist.meta.cover !== undefined && artist.meta.cover !== "")
-                    iconSource: FluentIcons.Contact
+                    visible: !(meta.cover !== undefined && meta.cover !== "")
+                    iconSource: FluentIcons.MusicNote
                     iconSize: 44
                     iconColor: Theme.dark ? "#3A3846" : "#CFCCE0"
                 }
@@ -137,29 +141,63 @@ Item {
 
                 FluText {
                     Layout.fillWidth: true
-                    text: artist.meta.name !== undefined && artist.meta.name !== ""
-                        ? artist.meta.name
-                        : (artist.loading ? "正在查找歌手…" : "歌手")
+                    text: meta.name !== undefined && meta.name !== ""
+                        ? meta.name
+                        : (album.loading ? "正在查找专辑…" : "专辑")
                     font.pixelSize: 24
                     font.weight: Font.Bold
                     color: Theme.textPrimary
+                    wrapMode: Text.WordWrap
+                    maximumLineCount: 2
                     elide: Text.ElideRight
                 }
 
-                // 别名 / 组合名
+                // 歌手名可点（进歌手页）
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 0
+                    visible: control.artistNames.length > 0
+
+                    Repeater {
+                        model: control.artistNames
+                        delegate: FluText {
+                            required property var modelData
+                            required property int index
+
+                            objectName: "albumArtistLink"
+                            Layout.alignment: Qt.AlignVCenter
+                            Layout.maximumWidth: 220
+                            text: (index > 0 ? " / " : "") + modelData.name
+                            font.pixelSize: 13
+                            font.underline: albumArtistMouse.containsMouse
+                            color: albumArtistMouse.containsMouse ? Theme.accent : Theme.textSecondary
+                            elide: Text.ElideRight
+
+                            MouseArea {
+                                id: albumArtistMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: artist.openById(modelData.id, modelData.name)
+                            }
+                        }
+                    }
+
+                    Item { Layout.fillWidth: true }
+                }
+
                 FluText {
                     Layout.fillWidth: true
-                    visible: control.aliasText !== ""
-                    text: control.aliasText
+                    visible: text !== ""
+                    text: control.subtitle
                     font.pixelSize: 12
-                    color: Theme.textSecondary
+                    color: Theme.textTertiary
                     elide: Text.ElideRight
                 }
 
-                // 单曲 / 专辑 / MV / 粉丝
                 FluText {
                     Layout.fillWidth: true
-                    visible: control.statsText !== ""
+                    visible: text !== ""
                     text: control.statsText
                     font.pixelSize: 12
                     color: Theme.textTertiary
@@ -170,7 +208,7 @@ Item {
                     Layout.fillWidth: true
                     Layout.maximumHeight: 44
                     visible: text !== ""
-                    text: artist.meta.brief_desc !== undefined ? artist.meta.brief_desc : ""
+                    text: meta.description !== undefined ? meta.description : ""
                     font.pixelSize: 11
                     color: Theme.textTertiary
                     wrapMode: Text.WordWrap
@@ -183,34 +221,34 @@ Item {
                     spacing: 10
 
                     FluFilledButton {
-                        objectName: "artistPlayAllButton"
+                        objectName: "albumPlayAllButton"
                         text: "播放全部"
-                        disabled: artist.model.count === 0
-                        onClicked: player.playTrackInList(artist.model.allItems(), 0)
+                        disabled: album.model.count === 0
+                        onClicked: player.playTrackInList(album.model.allItems(), 0)
                     }
 
                     FluButton {
                         text: "添加到队列"
-                        disabled: artist.model.count === 0
-                        onClicked: player.extendQueue(artist.model.allItems())
+                        disabled: album.model.count === 0
+                        onClicked: player.extendQueue(album.model.allItems())
                     }
 
                     FluButton {
                         text: "全部收藏"
-                        disabled: artist.model.count === 0
-                        onClicked: library.addManyToFavorites(artist.model.allItems())
+                        disabled: album.model.count === 0
+                        onClicked: library.addManyToFavorites(album.model.allItems())
                     }
                 }
             }
         }
 
-        // ── 热门歌曲 ────────────────────────────────────────
+        // ── 曲目 ────────────────────────────────────────────
         RowLayout {
             Layout.fillWidth: true
             spacing: 8
 
             FluText {
-                text: "热门歌曲"
+                text: "歌曲"
                 font.pixelSize: 15
                 font.weight: Font.DemiBold
                 color: Theme.textPrimary
@@ -218,8 +256,8 @@ Item {
 
             FluText {
                 Layout.alignment: Qt.AlignVCenter
-                visible: artist.model.count > 0
-                text: String(artist.model.count) + " 首"
+                visible: album.model.count > 0
+                text: String(album.model.count) + " 首"
                 font.pixelSize: 11
                 color: Theme.textTertiary
             }
@@ -239,14 +277,15 @@ Item {
             TrackListView {
                 anchors.fill: parent
                 anchors.margins: 6
-                model: artist.model
+                model: album.model
                 showCover: false
-                busy: artist.loading
-                emptyIcon: FluentIcons.Contact
-                emptyTitle: artist.loading ? "正在加载歌手…" : "没有找到这位歌手的热门歌曲"
-                emptyDescription: artist.loading ? "" : "网易云接口里没有可播放的歌曲，换个歌手试试"
+                showAlbum: false
+                busy: album.loading
+                emptyIcon: FluentIcons.MusicNote
+                emptyTitle: album.loading ? "正在加载专辑…" : "这张专辑没有可播放的歌曲"
+                emptyDescription: album.loading ? "" : "网易云接口里没有可播放的曲目，换一张专辑试试"
                 onTrackActivated: function (index) {
-                    player.playTrackInList(artist.model.allItems(), index)
+                    player.playTrackInList(album.model.allItems(), index)
                 }
                 onRequestPlayNow: function (track) { player.playTrack(track) }
                 onRequestPlayNext: function (track) { player.playNextTrack(track) }

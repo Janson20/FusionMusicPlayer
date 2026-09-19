@@ -151,6 +151,10 @@ class PlayerEngine(QObject):
         return self._current.album if self._current else ""
 
     @Property(str, notify=trackChanged)
+    def albumId(self) -> str:  # noqa: N802
+        return self._current.album_id if self._current else ""
+
+    @Property(str, notify=trackChanged)
     def coverUrl(self) -> str:  # noqa: N802
         if not self._current or not self._current.cover:
             return ""

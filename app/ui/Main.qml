@@ -191,7 +191,22 @@ FluWindow {
                 onCloseRequested: discover.closePlaylist()
             }
 
-            // 歌手详情覆盖层（点任意地方的歌手名打开），压在歌单详情之上
+            // 专辑详情覆盖层（点任意地方的专辑名打开）
+            AlbumDetailPanel {
+                id: albumDetail
+                width: parent.width
+                height: parent.height
+                visible: album.opened
+                x: visible ? 0 : width
+                opacity: visible ? 1 : 0
+                Behavior on x { NumberAnimation { duration: Theme.durationNormal; easing.type: Easing.OutCubic } }
+                Behavior on opacity { NumberAnimation { duration: Theme.durationFast } }
+                onCloseRequested: album.close()
+            }
+
+            // 歌手详情覆盖层（点任意地方的歌手名打开）。
+            // 声明顺序即层级：它要压在歌单详情与专辑详情之上 —— 从专辑页点歌手名
+            // 进去时，歌手页必须盖在专辑页上，否则打开了个看不见的页面。
             ArtistDetailPanel {
                 id: artistDetail
                 width: parent.width
@@ -282,6 +297,8 @@ FluWindow {
                 app.setExpanded(false)
             else if (artist.opened)
                 artist.close()
+            else if (album.opened)
+                album.close()
             else if (discover.detailId !== "")
                 discover.closePlaylist()
         }

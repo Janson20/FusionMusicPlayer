@@ -30,13 +30,17 @@ Item {
     signal requestAppend(var track)
     signal requestFavorite(var track)
     signal artistRequested(string name)
+    signal albumRequested(string albumId, string albumName)
     signal emptyActionTriggered
 
     clip: true
 
-    // 行里的歌手名（或右键菜单的「查看歌手」）点了就进歌手页。
-    // 放在这里而不是各个页面里，是为了「所有地方点歌手名字都能进」。
+    // 行里的歌手名 / 专辑名（或右键菜单的同名入口）点了就进对应的详情页。
+    // 放在这里而不是各个页面里，是为了「所有地方点歌手名 / 专辑名都能进」。
     onArtistRequested: function (name) { artist.openByName(name) }
+    onAlbumRequested: function (albumId, albumName) {
+        album.openById(albumId, albumName)
+    }
 
     ListView {
         id: listView
@@ -63,6 +67,9 @@ Item {
 
             onActivated: control.trackActivated(index)
             onArtistRequested: function (name) { control.artistRequested(name) }
+            onAlbumRequested: function (albumId, albumName) {
+                control.albumRequested(albumId, albumName)
+            }
             onMenuRequested: function (x, y) {
                 // 用模型行取完整字典：QML 里手拼的 JS 对象会丢掉 types/type_detail，
                 // 那样入库后恢复播放会退化成 128k
@@ -97,6 +104,9 @@ Item {
         onAppendToQueue: control.requestAppend(trackMenu.trackData)
         onToggleFav: control.requestFavorite(trackMenu.trackData)
         onViewArtist: function (name) { control.artistRequested(name) }
+        onViewAlbum: function (albumId, albumName) {
+            control.albumRequested(albumId, albumName)
+        }
         onCopyInfo: {
             var t = trackMenu.trackData
             if (t)

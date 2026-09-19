@@ -14,6 +14,7 @@ from PySide6.QtQml import QQmlApplicationEngine
 import FluentUI
 
 from . import paths
+from .bridges.album import AlbumController
 from .bridges.app import AppController
 from .bridges.artist import ArtistController
 from .bridges.discover import DiscoverController
@@ -98,7 +99,8 @@ class Application(QObject):
         self.search = SearchController(self.config)
         self.library_bridge = LibraryController(self.config, self.library)
         self.discover = DiscoverController(self.config)
-        self.artist = ArtistController(self.config)
+        self.artist = ArtistController(self)
+        self.album = AlbumController(self)
         self.settings = SettingsController(self.config)
         self.app = AppController(self.config)
 
@@ -116,6 +118,7 @@ class Application(QObject):
         ctx.setContextProperty("library", self.library_bridge)
         ctx.setContextProperty("discover", self.discover)
         ctx.setContextProperty("artist", self.artist)
+        ctx.setContextProperty("album", self.album)
         ctx.setContextProperty("settings", self.settings)
         ctx.setContextProperty("app", self.app)
 
@@ -139,6 +142,7 @@ class Application(QObject):
         self.library_bridge.favoritesChanged.connect(self.player.favoriteStateChanged)
         self.discover.errorOccurred.connect(self.app.warn)
         self.artist.errorOccurred.connect(self.app.warn)
+        self.album.errorOccurred.connect(self.app.warn)
         self.settings.message.connect(self.app.info)
         self.settings.errorOccurred.connect(self.app.error)
 
