@@ -13,6 +13,7 @@ FMCL 只用到搜索、播放地址、歌词、歌单与登录；这里在不改
 from __future__ import annotations
 
 import logging
+import random
 import threading
 import time
 from typing import Dict, List, Optional, Tuple
@@ -502,6 +503,73 @@ def playlist_meta(playlist_id: str) -> Dict:
         "play_count": int(pl.get("playCount") or 0),
         "creator": str((pl.get("creator") or {}).get("nickname") or ""),
     }
+
+# ──────────────────────────────────────────────────────────────
+# 漫游（个性化推荐流）
+# ──────────────────────────────────────────────────────────────
+
+# 私人 FM 每次只给 3 首，且不认 limit，要凑一批就得连打几次
+ROAM_FM_BATCH = 3
+
+def roam_batch(size: int = 15) -> List[Tuple[MusicInfo, str]]:
+    """取一批个性化推荐，返回 ``[(MusicInfo, 推荐理由), …]``。
+
+    三级来源，越靠前越「懂你」：
+
+    1. **私人 FM** ``/api/v1/radio/get``（需登录）：每次 3 首、连打就是一条
+       取之不尽的流，服务端还会给出推荐理由（「你关注的音乐人新歌」
+       「NO.43 飙升榜」「小众推荐」…），实测每次返回的都不重复；
+    2. **每日推荐** ``/api/v1/discovery/recommend/songs``（需登录）：
+       FM 拿不到时的兜底，随机抽一批，免得每次漫游都是同一批歌；
+    3. **推荐新音乐** ``/api/personalized/newsong``（免登录）：没登录时至少
+       还能漫游，只是推荐理由变成「新歌推荐」。
+    """
+    src = _wy()
+    if src is None or size <= 0:
+        return []
+
+    if _safe(lambda: src.is_logged_in(), False):
+        batch = _roam_from_fm(src, size)
+        if batch:
+            return batch
+        batch = _roam_from_daily(src, size)
+        if batch:
+            return batch
+    return _roam_from_new_songs(src, size)
+
+def _roam_from_fm(src, size: int) -> List[Tuple[MusicInfo, str]]:
+    out: List[Tuple[MusicInfo, str]] = []
+    seen = set()
+    rounds = max(1, (int(size) + ROAM_FM_BATCH - 1) // ROAM_FM_BATCH)
+    for _ in range(rounds):
+        resp = _safe(lambda: src._eapi_post("/api/v1/radio/get", {}), {}) or {}  # noqa: SLF001
+        items = resp.get("data") if isinstance(resp, dict) else None
+        if not items:
+            break
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            songmid = str(item.get("id") or "")
+            if not songmid or songmid in seen:
+                continue
+            seen.add(songmid)
+            parsed = _parse_songs(src, [item])
+            if parsed:
+                out.append((parsed[0], str(item.get("reason") or "")))
+            if len(out) >= size:
+                return out
+    return out
+
+def _roam_from_daily(src, size: int) -> List[Tuple[MusicInfo, str]]:
+    songs = _safe(lambda: daily_recommend(), []) or []
+    if not songs:
+        return []
+    picked = random.sample(songs, min(size, len(songs))) if len(songs) > 1 else list(songs)
+    return [(mi, "每日推荐") for mi in picked]
+
+def _roam_from_new_songs(src, size: int) -> List[Tuple[MusicInfo, str]]:
+    songs = _safe(lambda: new_songs(max(size, 10)), []) or []
+    return [(mi, "新歌推荐") for mi in songs[:size]]
 
 # ──────────────────────────────────────────────────────────────
 # 歌手页 / 搜索结果置顶

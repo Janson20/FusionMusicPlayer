@@ -59,6 +59,9 @@ class Track:
     path: str = ""
     # 元信息
     added_at: int = 0
+    # 推荐理由（「你关注的音乐人新歌」这种）。只用于展示，不进 to_dict，
+    # 免得被写进歌单 / 收藏 / 缓存里。
+    reason: str = ""
 
     # ── 派生属性 ────────────────────────────────────────────
 
@@ -150,8 +153,12 @@ class Track:
 
         QML 侧（播放队列等）会直接读取字典，因此这里把 ``uid`` / ``durationText``
         这类派生属性一并带上；:meth:`from_dict` 会忽略这些多余键。
+
+        ``reason`` 是随用随弃的展示字段（漫游流的推荐理由），故意不带出去 ——
+        它会被写进歌单 / 收藏 / 历史，下次打开就是一句过期的推荐理由。
         """
         d = asdict(self)
+        d.pop("reason", None)
         d.update(
             {
                 "uid": self.uid,
@@ -201,6 +208,7 @@ def role_names() -> List[bytes]:
         b"path",
         b"playCount",
         b"displayName",
+        b"reason",
     ]
 
 _ROLE_KEYS = [r.decode() for r in role_names()]

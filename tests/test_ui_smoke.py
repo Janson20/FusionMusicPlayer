@@ -182,14 +182,16 @@ class UiProbe(Application):
         blocker = self.window.findChild(QObject, "playlistDetailBlocker")
         check("歌单详情遮罩存在", blocker is not None and nav is not None)
         if blocker is not None and nav is not None:
-            # 导航第二项「搜索」（44px 一项，从 y=10 开始）
+            # 导航第二项（44px 一项，从 y=10 开始）—— 别写死是哪个页面，
+            # 导航项以后可能插新的（漫游就是这么插进来的）
             point = self.to_point(nav, 60, 76)
+            second_page = self.nav_page_at(1)
             blocker.setProperty("enabled", False)
             self.click(point)
             self.pump(600)
             check("（对照）关掉歌单详情遮罩后确实会点穿",
-                  self.eval_value("app.page", "") == "search",
-                  f"page={self.eval_value('app.page')!r}")
+                  self.eval_value("app.page", "") == second_page,
+                  f"page={self.eval_value('app.page')!r} 期望={second_page!r}")
             self.eval_js("app.go('discover')")
 
             blocker.setProperty("enabled", True)
@@ -233,16 +235,17 @@ class UiProbe(Application):
             self.step_signal_params()
             return
 
-        # 导航第二项「搜索」（44px 一项，从 y=10 开始）
+        # 导航第二项（44px 一项，从 y=10 开始）
         point = self.to_point(nav, 60, 76)
+        second_page = self.nav_page_at(1)
 
         # 负向对照：先关掉遮罩，证明这个点确实压在导航项上 —— 修复前就是这个行为
         blocker.setProperty("enabled", False)
         self.click(point)
         self.pump(600)
         check("（对照）关掉遮罩后确实会点穿到导航项",
-              self.eval_value("app.page", "") == "search",
-              f"page={self.eval_value('app.page')!r}")
+              self.eval_value("app.page", "") == second_page,
+              f"page={self.eval_value('app.page')!r} 期望={second_page!r}")
         self.eval_js("app.go('discover')")
 
         blocker.setProperty("enabled", True)
@@ -441,10 +444,14 @@ class UiProbe(Application):
         np_album = self.item("nowPlayingAlbumLink")
         check("展开播放页里的专辑名可以点", np_album is not None)
         if np_album is not None:
+            # 等展开动画结束、链接真的可见了再点，否则点到的是动画中途的位置
+            self.wait_until(lambda: bool(np_album.isVisible()), 3000)
             self.click_item(np_album)
             check("点展开页的专辑名会先收起展开页",
-                  not self.eval_value("app.expanded", True))
-            check("展开页点专辑名也能进专辑页", self.album.opened)
+                  not self.eval_value("app.expanded", True),
+                  f"expanded={self.eval_value('app.expanded')}")
+            check("展开页点专辑名也能进专辑页", self.album.opened,
+                  f"album.opened={self.album.opened}")
             self.album.close()
             self.pump(500)
             self.eval_js("app.setExpanded(false)")
@@ -458,6 +465,47 @@ class UiProbe(Application):
               f"loading={self.album.loading} opened={self.album.opened}")
 
         self.search.clear()
+        self.pump(400)
+
+        self.step_roam()
+
+    # ── 漫游 ────────────────────────────────────────────────
+    def step_roam(self):
+        """漫游页：推荐流渲染、开始漫游、听别的歌自动交棒。
+
+        推荐流用注入的假数据（真接口要联网，而且每次都不一样）；续歌时机
+        另由 ``tests/test_core.py::test_roam_refill_rules`` 离线覆盖。
+        """
+        # 先占住「已经取过」，免得页面切过去时自己去联网
+        self.roam._requested = True
+        self.inject_roam_stream()
+
+        names = [str(item.get("name")) for item in self.nav_items()]
+        check("导航栏里有「漫游」", "漫游" in names, f"{names}")
+
+        self.eval_js("app.go('roam')")
+        self.pump(800)
+        row = self.top_row()
+        check("漫游页渲染出推荐流", row is not None)
+        if row is not None:
+            check("推荐流显示推荐理由",
+                  len(self.find_items("trackRowReason", row)) > 0)
+
+        # 开始漫游：进队列 + 进入漫游态
+        self.roam.playFrom(0)
+        self.pump(600)
+        check("开始漫游后处于漫游态", self.roam.active)
+        check("漫游流进了播放队列",
+              int(self.eval_value("player.queueCount", 0) or 0) == self.roam.count,
+              f"queue={self.eval_value('player.queueCount')} roam={self.roam.count}")
+
+        # 去听别的歌 → 漫游交棒，不再往队列里塞歌
+        self.player.playTrack({"source": "wy", "songmid": "smoke-other",
+                               "name": "别的歌", "singer": "别人", "interval": 120})
+        self.pump(800)
+        check("播放别的歌后漫游自动交棒", not self.roam.active)
+
+        self.eval_js("app.go('discover')")
         self.pump(400)
 
         self.step_signal_params()
@@ -512,6 +560,24 @@ class UiProbe(Application):
     def current_track(self) -> str:
         return str(self.eval_value("player.currentTrack ? player.currentTrack.name : ''", "") or "")
 
+    def nav_items(self) -> list:
+        """导航项列表（``items`` 是 JS 数组，得先 toVariant 才拿得到 Python list）。"""
+        nav = self.window.findChild(QObject, "navPane")
+        if nav is None:
+            return []
+        value = nav.property("items")
+        try:
+            return list(value.toVariant() or [])
+        except AttributeError:
+            return list(value or [])
+
+    def nav_page_at(self, index: int) -> str:
+        """导航栏第 index 项对应的页面 id（顺序变了也不会误判）。"""
+        items = self.nav_items()
+        if 0 <= index < len(items):
+            return str(items[index].get("id") or "")
+        return ""
+
     def inject_search_rows(self) -> None:
         """塞两首假歌进搜索列表，免得冒烟测试依赖联网的搜索结果。"""
         from app.core.models import Track
@@ -522,6 +588,19 @@ class UiProbe(Application):
             Track(source="wy", songmid="probe-2", name="测试歌曲 B",
                   singer="洛天依", album="探针专辑", interval=180),
         ])
+
+    def inject_roam_stream(self) -> None:
+        """塞一条假的漫游流（带推荐理由），不联网。"""
+        from app.core.models import Track
+
+        tracks = []
+        for i in range(3):
+            track = Track(source="wy", songmid=f"roam-{i}", name=f"漫游歌曲 {i}",
+                          singer="探针歌手", album="探针专辑", interval=180 + i)
+            track.reason = "你关注的音乐人新歌"
+            tracks.append(track)
+        self.roam._model.set_tracks(tracks)
+        self.roam.changed.emit()
 
     def inject_tops(self) -> None:
         """注入搜索置顶卡片的数据（真实数据来自网易云搜索接口）。"""

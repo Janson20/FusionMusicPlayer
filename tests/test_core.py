@@ -379,6 +379,51 @@ def test_album_title_matching():
     assert pick_album([], "x") == {}
 
 
+def test_roam_refill_rules():
+    """漫游续歌的时机：早了会断，晚了会疯了一样往队列里塞歌。"""
+    from app.core.roam import clean_reason, needs_refill, pick_playable
+
+    # 没在漫游 / 已经在取了：一律不续
+    assert needs_refill(False, 0, False) is False
+    assert needs_refill(True, 0, True) is False
+    # 队列里还剩很多：不续
+    assert needs_refill(True, 10, False) is False
+    assert needs_refill(True, 3, False) is False
+    # 剩得不多（默认阈值 2）：续
+    assert needs_refill(True, 2, False) is True
+    assert needs_refill(True, 1, False) is True
+    assert needs_refill(True, 0, False) is True
+    assert needs_refill(True, -1, False) is True      # 队列算错了也别卡死
+    # 阈值可以调，0 表示「一放完就续」
+    assert needs_refill(True, 1, False, threshold=0) is False
+    assert needs_refill(True, 0, False, threshold=0) is True
+
+    # 推荐理由收拾成一小截
+    assert clean_reason("  你关注的   音乐人新歌 ") == "你关注的 音乐人新歌"
+    assert clean_reason("") == ""
+    assert clean_reason(None) == ""
+    long_reason = "根据你最近反复收听的口味为你挑选的一批歌曲"
+    assert len(clean_reason(long_reason)) <= 16
+    assert clean_reason(long_reason).endswith("…")
+
+    # 过滤掉放不了的条目
+    assert pick_playable([Track(source="wy", songmid="1", name="有歌名"),
+                          Track(source="wy", songmid="", name="没 id"),
+                          Track(source="wy", songmid="2", name=""),
+                          None]) == [Track(source="wy", songmid="1", name="有歌名")]
+
+
+def test_track_reason_is_transient():
+    """推荐理由只用于展示，不能跟着歌单 / 收藏一起落盘。"""
+    track = Track(source="wy", songmid="1", name="歌", reason="你关注的音乐人新歌")
+    assert track.reason == "你关注的音乐人新歌"
+    assert "reason" not in track.to_dict()
+    # 走一遍「落盘 → 读回」：理由不该被带回来
+    again = Track.from_dict(track.to_dict())
+    assert again.reason == ""
+    assert again.name == "歌"
+
+
 if __name__ == "__main__":
     import traceback
 

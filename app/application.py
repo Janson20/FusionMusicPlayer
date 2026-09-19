@@ -19,6 +19,7 @@ from .bridges.app import AppController
 from .bridges.artist import ArtistController
 from .bridges.discover import DiscoverController
 from .bridges.library import LibraryController
+from .bridges.roam import RoamController
 from .bridges.search import SearchController
 from .bridges.settings import SettingsController
 from .config import Config
@@ -101,6 +102,8 @@ class Application(QObject):
         self.discover = DiscoverController(self.config)
         self.artist = ArtistController(self)
         self.album = AlbumController(self)
+        self.roam = RoamController(self.config, self.player, self)
+        self.roam.watch_player()
         self.settings = SettingsController(self.config)
         self.app = AppController(self.config)
 
@@ -119,6 +122,7 @@ class Application(QObject):
         ctx.setContextProperty("discover", self.discover)
         ctx.setContextProperty("artist", self.artist)
         ctx.setContextProperty("album", self.album)
+        ctx.setContextProperty("roam", self.roam)
         ctx.setContextProperty("settings", self.settings)
         ctx.setContextProperty("app", self.app)
 
@@ -143,6 +147,8 @@ class Application(QObject):
         self.discover.errorOccurred.connect(self.app.warn)
         self.artist.errorOccurred.connect(self.app.warn)
         self.album.errorOccurred.connect(self.app.warn)
+        self.roam.errorOccurred.connect(self.app.warn)
+        self.roam.message.connect(self.app.info)
         self.settings.message.connect(self.app.info)
         self.settings.errorOccurred.connect(self.app.error)
 

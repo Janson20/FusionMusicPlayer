@@ -32,6 +32,7 @@ Rectangle {
     // 导航项定义
     readonly property var items: [
         { id: "discover", name: "发现音乐", icon: FluentIcons.Globe,  badge: 0 },
+        { id: "roam",     name: "漫游",     icon: FluentIcons.MapCompassTop, badge: 0 },
         { id: "search",   name: "搜索",     icon: FluentIcons.Search, badge: 0 },
         { id: "library",  name: "我的音乐", icon: FluentIcons.Heart,  badge: favoriteCount },
         { id: "local",    name: "本地音乐", icon: FluentIcons.Folder, badge: localCount },

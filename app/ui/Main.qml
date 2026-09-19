@@ -160,15 +160,17 @@ FluWindow {
                 }
                 currentIndex: {
                     switch (app.page) {
-                    case "search": return 1
-                    case "library": return 2
-                    case "local": return 3
-                    case "queue": return 4
+                    case "roam": return 1
+                    case "search": return 2
+                    case "library": return 3
+                    case "local": return 4
+                    case "queue": return 5
                     default: return 0
                     }
                 }
 
                 DiscoverPage { }
+                RoamPage { }
                 SearchPage { }
                 LibraryPage { }
                 LocalPage { }

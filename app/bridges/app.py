@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 PAGES: List[Dict[str, str]] = [
     {"id": "discover", "name": "发现音乐", "icon": "Globe", "desc": "推荐歌单与排行榜"},
+    {"id": "roam", "name": "漫游", "icon": "MapCompassTop", "desc": "按口味持续推荐的流"},
     {"id": "search", "name": "搜索", "icon": "Search", "desc": "多音源在线搜索"},
     {"id": "library", "name": "我的音乐", "icon": "Heart", "desc": "我喜欢与歌单"},
     {"id": "local", "name": "本地音乐", "icon": "Folder", "desc": "扫描本地曲库"},

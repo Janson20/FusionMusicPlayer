@@ -29,6 +29,8 @@ Rectangle {
     required property bool isOriginal
     required property string originalName
     required property string bestQuality
+    // 推荐理由（漫游流才有，别的列表是空串）
+    required property string reason
     // 供右键菜单构造完整曲目数据使用
     required property string source
     required property string songmid
@@ -148,6 +150,23 @@ Rectangle {
                         text: control.originalName !== "" ? ("原唱 · " + control.originalName) : "原唱"
                         font.pixelSize: 9
                         color: Theme.accent
+                    }
+                }
+
+                // 推荐理由（漫游）
+                Rectangle {
+                    objectName: "trackRowReason"
+                    visible: control.reason !== ""
+                    Layout.preferredWidth: reasonText.implicitWidth + 12
+                    Layout.preferredHeight: 16
+                    radius: 8
+                    color: Theme.dark ? "#2A2836" : "#F0EFF7"
+                    FluText {
+                        id: reasonText
+                        anchors.centerIn: parent
+                        text: control.reason
+                        font.pixelSize: 9
+                        color: Theme.textSecondary
                     }
                 }
             }
