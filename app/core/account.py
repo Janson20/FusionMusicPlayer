@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from typing import Any, Dict, Optional
@@ -37,6 +38,7 @@ from ..sources import (
     wy_login_qr_key,
     wy_source,
 )
+from ..sources import netease
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +53,7 @@ QR_SCANNED = 802
 QR_SUCCESS = 803
 
 PROVIDER = "netease"
-MUSIC_U_TTL_SECONDS = 180 * 24 * 3600  # MUSIC_U 的 Max-Age 约 180 天
+MUSIC_U_TTL_SECONDS = netease.COOKIE_TTL_SECONDS  # 拿不到 Set-Cookie 时的兜底估算
 
 # 网易云会员标识（vipCode / vipType 位掩码都归一到这几个名字）
 VIP_LABELS = {
@@ -71,9 +73,11 @@ class _Emitter(QObject):
     loginDone = Signal(object)
     profileDone = Signal(object)
     playlistsDone = Signal(object)
+    checkDone = Signal(object)
+    renewDone = Signal(str)
 
 class AccountManager(QObject):
-    """网易云账号状态与登录流程。"""
+    """网易云账号状态、登录流程与凭据续期。"""
 
     qrChanged = Signal()
     statusChanged = Signal()
@@ -81,6 +85,7 @@ class AccountManager(QObject):
     profileChanged = Signal()
     playlistsChanged = Signal()
     busyChanged = Signal()
+    credentialsChanged = Signal()
     message = Signal(str)
     errorOccurred = Signal(str)
 
@@ -93,6 +98,8 @@ class AccountManager(QObject):
         self._emitter.loginDone.connect(self._on_login_done)
         self._emitter.profileDone.connect(self._on_profile_done)
         self._emitter.playlistsDone.connect(self._on_playlists_done)
+        self._emitter.checkDone.connect(self._on_check_done)
+        self._emitter.renewDone.connect(self._on_renew_done)
 
         self._logged_in = False
         self._busy = False
@@ -112,6 +119,9 @@ class AccountManager(QObject):
         self._red_vip_level = 0
         self._red_vip_annual_count = 0
         self._remote_playlists: list = []
+        # 凭据有效期（unix 秒）：登录 / 续期时从 Set-Cookie 读，读不到就按 180 天估
+        self._obtained_at = 0
+        self._expires_at = 0
 
     # ── 属性 ────────────────────────────────────────────────
 
@@ -209,6 +219,46 @@ class AccountManager(QObject):
     def dataDir(self) -> str:  # noqa: N802
         return str(paths.data_dir())
 
+    # ── 凭据有效期 ──────────────────────────────────────────
+
+    @Property(int, notify=credentialsChanged)
+    def credentialDaysLeft(self) -> int:  # noqa: N802
+        """凭据还剩几天（向上取整；-1 = 未知 / 没保存凭据）。
+
+        向上取整是为了不把「还剩 20 小时」显示成「已过期」。
+        """
+        if not self._expires_at:
+            return -1
+        remaining = self._expires_at - time.time()
+        if remaining <= 0:
+            return 0
+        return int(math.ceil(remaining / 86400))
+
+    @Property(str, notify=credentialsChanged)
+    def credentialExpiry(self) -> str:  # noqa: N802
+        """给设置页显示的一行有效期文案。"""
+        if not vault.exists():
+            return "未保存凭据"
+        if not self._expires_at:
+            return "未知（续期一次即可读到）"
+        when = time.strftime("%Y-%m-%d", time.localtime(self._expires_at))
+        if self._expires_at <= time.time():
+            return f"{when}（已过期，请重新登录）"
+        return f"{when}（还剩 {self.credentialDaysLeft} 天）"
+
+    @Property(bool, notify=credentialsChanged)
+    def credentialExpiring(self) -> bool:  # noqa: N802
+        """是否已进入自动续期的窗口（设置里那个 cookie_refresh_days）。"""
+        return self._logged_in and netease.should_renew(
+            self._expires_at, int(time.time()), self._renew_days()
+        )
+
+    def _renew_days(self) -> int:
+        try:
+            return int(self._config.get("account.cookie_refresh_days", 7) or 0)
+        except (TypeError, ValueError):
+            return 7
+
     # ── 启动恢复 ────────────────────────────────────────────
 
     @Slot()
@@ -230,6 +280,10 @@ class AccountManager(QObject):
         if not payload or payload.get("provider") != PROVIDER:
             self._set_status("未登录")
             return
+
+        # 有效期先读出来：设置页要显示它，而且后面判断「该不该续期」全靠它
+        self._load_expiry(payload)
+        self.credentialsChanged.emit()
 
         cookies = payload.get("cookies") or ""
         if not cookies:
@@ -254,8 +308,15 @@ class AccountManager(QObject):
         self.profileChanged.emit()
         logger.info("已从加密凭据恢复网易云登录态")
 
-        # 服务端校验 + 拉取歌单（异步，不阻塞启动）
-        threading.Thread(target=self._refresh_worker, daemon=True, name="wy-refresh").start()
+        # 服务端校验 + 必要时续期 + 拉取歌单（异步，不阻塞启动）
+        threading.Thread(target=self._check_worker, daemon=True, name="wy-check").start()
+
+    def _load_expiry(self, payload: Dict[str, Any]) -> None:
+        """读出凭据有效期；老版本凭据没有这个字段时按「拿到时刻 + 180 天」补。"""
+        self._obtained_at = int(payload.get("obtained_at") or 0)
+        self._expires_at = int(payload.get("expires_at") or 0)
+        if not self._expires_at and self._obtained_at:
+            self._expires_at = self._obtained_at + MUSIC_U_TTL_SECONDS
 
     def _apply_vip_fields(self, profile: dict) -> None:
         """从（凭据或接口返回的）profile 里取出会员字段。
@@ -542,18 +603,39 @@ class AccountManager(QObject):
                 profile.get("red_vip_annual_count") or self._red_vip_annual_count or 0
             ),
             "obtained_at": int(time.time()),
-            "expires_at": int(time.time()) + MUSIC_U_TTL_SECONDS,
+            "expires_at": self._resolve_expiry(),
             "app_version": APP_VERSION,
         }
         try:
             ok = vault.save(payload)
-            if not ok:
+            if ok:
+                self._obtained_at = int(payload["obtained_at"])
+                self._expires_at = int(payload["expires_at"])
+                self.credentialsChanged.emit()
+            else:
                 self.errorOccurred.emit("凭据加密保存失败，本次登录状态不会被记住")
         except VaultError as e:
             self.errorOccurred.emit(str(e))
         except Exception as e:
             logger.warning("保存凭据失败: %s", e)
             self.errorOccurred.emit("凭据保存失败，本次登录状态不会被记住")
+
+    def _resolve_expiry(self) -> int:
+        """凭据到期时间。
+
+        优先级：本次会话里服务端刚给的 ``Set-Cookie`` Max-Age（续期响应就有）
+        > 已经记着的有效期 > 拿到的时刻 + 180 天估算。
+
+        「已经记着的」这一档不能省：把 cookie 塞回会话时只带 name=value
+        （``apply_cookie_str`` 会丢掉 Max-Age），拿不到 jar 里的过期时间就只
+        剩估算，而估算会把真实有效期一路往后推 —— 那样自动续期永远不会触发。
+        """
+        jar_expiry = netease.cookie_expiry()
+        if jar_expiry:
+            return jar_expiry
+        if self._expires_at:
+            return self._expires_at
+        return int(time.time()) + MUSIC_U_TTL_SECONDS
 
     def _refresh_worker(self) -> None:
         profile = None
@@ -563,18 +645,121 @@ class AccountManager(QObject):
             logger.debug("拉取账号信息失败: %s", e)
         self._emitter.profileDone.emit(profile)
 
+    # ── 服务端校验 + 续期 ───────────────────────────────────
+
+    def _check_worker(self) -> None:
+        """启动后的第一次校验：查登录态、必要时续期、顺带刷新账号信息。
+
+        三件事都在同一个后台线程里做，避免开三个线程：
+
+        1. :func:`netease.login_state` 判断「有效 / 已失效 / 网络不可用」——
+           只有确认失效才把界面置为未登录；
+        2. 凭据剩余有效期不足 ``account.cookie_refresh_days`` 天时调续期接口；
+        3. 拉一次 profile 刷新昵称与会员信息。
+        """
+        state = "offline"
+        profile = None
+        renewed = ""
+        try:
+            state = netease.login_state()
+        except Exception as e:
+            logger.debug("登录态校验失败: %s", e)
+        if state == "ok":
+            if self._should_renew():
+                renewed = netease.refresh_login()
+            try:
+                profile = wy_fetch_profile()
+            except Exception as e:
+                logger.debug("拉取账号信息失败: %s", e)
+        self._emitter.checkDone.emit((state, profile, renewed))
+
+    def _should_renew(self) -> bool:
+        return netease.should_renew(self._expires_at, int(time.time()), self._renew_days())
+
+    @Slot(object)
+    def _on_check_done(self, payload) -> None:
+        state, profile, renewed = payload
+        self._set_busy(False)
+
+        if state == "expired":
+            # 服务端明确说凭据不认了：置为未登录并引导重新登录。
+            # 凭据文件**不删** —— 万一是风控误判，删了就真回不来了。
+            logger.info("网易云登录已失效，已清除内存中的登录态")
+            self._reset_login_state()
+            self._set_status("登录已失效，请重新登录")
+            self.errorOccurred.emit("网易云登录已失效，请重新登录")
+            return
+
+        if state == "offline":
+            # 网络不通而已，保持登录态，不要打扰用户
+            logger.debug("登录态校验因网络问题跳过")
+            return
+
+        if renewed:
+            self._persist_credentials(renewed, {})
+            self.message.emit("登录凭据已自动续期")
+            self.credentialsChanged.emit()
+
+        if profile:
+            self._nickname = str(profile.get("nickname") or "")
+            self._avatar = str(profile.get("avatar_url") or "")
+            self._user_id = int(profile.get("user_id") or 0)
+            self._apply_vip_fields(profile)
+            self._set_status("已登录")
+            self.profileChanged.emit()
+            # 用服务端返回的完整信息覆盖一次凭据（含 cookie 与新的有效期）
+            self._persist_credentials(
+                wy_get_cookie_str(),
+                {
+                    "user_id": self._user_id,
+                    "nickname": self._nickname,
+                    "avatar_url": self._avatar,
+                    "vip_type": self._vip_type,
+                    "has_music_package": self._has_music_package,
+                    "has_black_vip": self._has_black_vip,
+                    "is_svip": self._is_svip,
+                    "red_vip_level": self._red_vip_level,
+                    "red_vip_annual_count": self._red_vip_annual_count,
+                },
+            )
+        # 走到这里说明服务端认可了当前会话（state == "ok"），歌单可以同步了
+        threading.Thread(target=self._playlists_worker, daemon=True, name="wy-playlists").start()
+
+    @Slot(str)
+    def _on_renew_done(self, cookies: str) -> None:
+        self._set_busy(False)
+        if not cookies:
+            self.errorOccurred.emit("续期失败，请检查网络后重试（或重新登录）")
+            return
+        self._persist_credentials(cookies, {})
+        self.message.emit("登录凭据已续期")
+        self.credentialsChanged.emit()
+
+    @Slot()
+    def renewCredentials(self) -> None:  # noqa: N802
+        """手动续期（设置页按钮）。"""
+        if not self._logged_in:
+            self.errorOccurred.emit("请先登录网易云账号")
+            return
+        self._set_busy(True)
+        threading.Thread(target=self._renew_worker, daemon=True, name="wy-renew").start()
+
+    def _renew_worker(self) -> None:
+        try:
+            cookies = netease.refresh_login()
+        except Exception as e:
+            logger.debug("续期失败: %s", e)
+            cookies = ""
+        self._emitter.renewDone.emit(cookies or "")
+
     @Slot(object)
     def _on_profile_done(self, profile) -> None:
+        """手动 ``refresh()`` 的结果（启动那次校验走 :meth:`_on_check_done`）。"""
         self._set_busy(False)
         if not profile:
-            if self._logged_in:
-                self._set_status("登录状态可能已失效")
-                self.errorOccurred.emit("服务端校验未通过，请尝试重新登录")
-            else:
-                # 即使拿不到账号信息也试着同步歌单（会话可能是有效的）
-                threading.Thread(
-                    target=self._playlists_worker, daemon=True, name="wy-playlists"
-                ).start()
+            # 不在这里判断凭据是否失效：网络抖动也会拿不到 profile，
+            # 真要判定失效得靠 netease.login_state()（见 _on_check_done）。
+            self.errorOccurred.emit("拉取账号信息失败，请检查网络后重试")
             return
         self._nickname = str(profile.get("nickname") or "")
         self._avatar = str(profile.get("avatar_url") or "")
@@ -631,6 +816,16 @@ class AccountManager(QObject):
             vault.delete()
         except Exception as e:
             logger.warning("删除凭据失败: %s", e)
+        self._reset_login_state()
+        self._qr_image = ""
+        self._set_status("已退出登录")
+        self._set_busy(False)
+        self.qrChanged.emit()
+        self.credentialsChanged.emit()
+        self.message.emit("已退出登录，本地凭据已删除")
+
+    def _reset_login_state(self) -> None:
+        """清掉内存里的登录态（不含凭据文件）。"""
         self._logged_in = False
         self._nickname = ""
         self._avatar = ""
@@ -642,14 +837,9 @@ class AccountManager(QObject):
         self._red_vip_level = 0
         self._red_vip_annual_count = 0
         self._remote_playlists = []
-        self._qr_image = ""
-        self._set_status("已退出登录")
-        self._set_busy(False)
         self.loggedInChanged.emit()
         self.profileChanged.emit()
         self.playlistsChanged.emit()
-        self.qrChanged.emit()
-        self.message.emit("已退出登录，本地凭据已删除")
 
     @Slot()
     def refresh(self) -> None:

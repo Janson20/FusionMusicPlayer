@@ -223,6 +223,101 @@ def _safe(fn, default):
         return default
 
 # ──────────────────────────────────────────────────────────────
+# 登录态校验与续期
+# ──────────────────────────────────────────────────────────────
+
+# 服务端给 MUSIC_U 的 Max-Age 是 180 天，续期后会重新计时
+COOKIE_TTL_SECONDS = 180 * 24 * 3600
+
+def should_renew(expires_at: int, now: int, days: int) -> bool:
+    """凭据是否该续期了（剩余有效期不足 ``days`` 天）。
+
+    ``days <= 0`` 表示关闭自动续期；``expires_at`` 缺失（老版本凭据）时续一次
+    把有效期补上。
+    """
+    if days <= 0:
+        return False
+    if expires_at <= 0:
+        return True
+    return expires_at - now <= days * 86400
+
+def cookie_expiry() -> int:
+    """当前会话里 ``MUSIC_U`` 的过期时间（unix 秒；拿不到返回 0）。
+
+    登录 / 续期响应带 ``Set-Cookie: MUSIC_U=...; Max-Age=15552000``，
+    requests 会把它记进 cookie jar，这里读出来当作凭据的真实有效期，
+    比「拿到的时刻 + 180 天」准。
+    """
+    src = _wy()
+    if src is None:
+        return 0
+    try:
+        for cookie in src._session.cookies:  # noqa: SLF001
+            if cookie.name == "MUSIC_U" and cookie.expires:
+                return int(cookie.expires)
+    except Exception as e:
+        logger.debug("读取网易云 cookie 有效期失败: %s", e)
+    return 0
+
+def login_state() -> str:
+    """服务端校验登录态，返回 ``"ok"`` / ``"expired"`` / ``"offline"``。
+
+    区分「凭据真的失效」和「网络不通」很重要：前者应当把界面置为未登录并引导
+    重新登录，后者绝不能因此清掉本地的登录态。
+    """
+    src = _wy()
+    if src is None:
+        return "offline"
+    if not _safe(lambda: src.is_logged_in(), False):
+        return "expired"
+    try:
+        resp = src._eapi_post("/api/nuser/account/get", {})  # noqa: SLF001
+    except Exception as e:
+        logger.debug("网易云登录态校验请求失败: %s", e)
+        return "offline"
+    if not isinstance(resp, dict):
+        return "offline"
+    code = resp.get("code")
+    if code == 200:
+        return "ok" if (resp.get("account") or resp.get("profile")) else "expired"
+    # 未登录 / 需要登录：301 未登录、250 需要验证
+    if code in (250, 301, 302, 401, 403):
+        return "expired"
+    # 其它错误码当作暂时性问题，不敢据此把用户登出
+    return "offline"
+
+def refresh_login() -> str:
+    """续期登录凭据，成功返回新的 cookie 串（失败返回空串）。
+
+    接口是 ``/api/login/token/refresh``。实测（2026-09，真实账号）::
+
+        eapi                      code=200
+        music.163.com/api（weapi 加密体）  code=200
+        music.163.com/weapi       空响应体（与其它接口一致，被风控拦）
+
+    **服务端不在响应体里回 cookie，而是用 ``Set-Cookie`` 换发一个新的
+    MUSIC_U**（值会变、Max-Age 重新计时 180 天），所以要重新导出会话 cookie
+    再落盘。换发后旧的 MUSIC_U 仍然有效（不会把已登录的会话踢下线），因此
+    即使落盘失败也不会导致掉登录。
+    """
+    src = _wy()
+    if src is None or not _safe(lambda: src.is_logged_in(), False):
+        return ""
+    before = _safe(lambda: src.get_cookie_str(), "") or ""
+    resp = _safe(lambda: src._eapi_post("/api/login/token/refresh", {}), {}) or {}  # noqa: SLF001
+    if not isinstance(resp, dict) or resp.get("code") != 200:
+        logger.debug(
+            "网易云登录续期失败: %s",
+            resp.get("code") if isinstance(resp, dict) else resp,
+        )
+        return ""
+    after = _safe(lambda: src.get_cookie_str(), "") or ""
+    if after == before:
+        # 值没变也算成功（服务端可能只延长了 Max-Age），照样把有效期带回去
+        logger.debug("网易云登录续期成功，但 cookie 值未变化")
+    return after or before
+
+# ──────────────────────────────────────────────────────────────
 # 歌词翻译 / 罗马音
 # ──────────────────────────────────────────────────────────────
 

@@ -172,6 +172,14 @@ class SettingsController(QObject):
     def saveCredentials(self) -> bool:  # noqa: N802
         return bool(self._config.get("account.save_credentials", True))
 
+    @Property(int, notify=changed)
+    def cookieRefreshDays(self) -> int:  # noqa: N802
+        """凭据剩余有效期少于这么多天时自动续期（0 = 关闭）。"""
+        try:
+            return int(self._config.get("account.cookie_refresh_days", 7) or 0)
+        except (TypeError, ValueError):
+            return 7
+
     @Property(bool, notify=changed)
     def scanOnStart(self) -> bool:  # noqa: N802
         return bool(self._config.get("local.scan_on_start", False))

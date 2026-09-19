@@ -50,6 +50,8 @@ DEFAULTS: Dict[str, Any] = {
         "provider": "netease",
         "auto_login": True,         # 启动时用已保存凭据自动登录
         "save_credentials": True,
+        # 凭据剩余有效期少于这么多天时自动续期（0 = 关闭）。
+        # 服务端给 MUSIC_U 的 Max-Age 是 180 天，续期会重新计时。
         "cookie_refresh_days": 7,
     },
     # ── 存储 ────────────────────────────────────────────────

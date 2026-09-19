@@ -430,6 +430,14 @@ FluWindow {
                         checked: settings.saveCredentials
                         onToggled: function (value) { settings.setBool("account.save_credentials", value) }
                     }
+                    SettingSwitch {
+                        label: "自动续期登录凭据"
+                        description: "凭据快到期时（默认 7 天内）自动向网易换一张新的，长期不用重新登录"
+                        checked: settings.cookieRefreshDays > 0
+                        onToggled: function (value) {
+                            settings.setInt("account.cookie_refresh_days", value ? 7 : 0)
+                        }
+                    }
 
                     SectionHeader { Layout.fillWidth: true; title: "凭据存储" }
                     SettingRow {
@@ -440,6 +448,46 @@ FluWindow {
                     SettingRow {
                         label: "加密方式"
                         value: "AES-256-GCM · 密钥来源：" + account.keySource
+                    }
+                    SettingRow {
+                        objectName: "credentialExpiryRow"
+                        label: "有效期"
+                        value: account.credentialExpiry
+                    }
+                    FluText {
+                        Layout.fillWidth: true
+                        visible: account.credentialExpiring
+                        text: "已进入自动续期窗口：下次启动会自动换发一张新凭据。"
+                        font.pixelSize: 11
+                        color: Theme.accent
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 10
+
+                        FluButton {
+                            objectName: "renewCredentialButton"
+                            text: "立即续期"
+                            enabled: account.loggedIn && !account.busy
+                            onClicked: account.renewCredentials()
+                        }
+                        FluText {
+                            Layout.fillWidth: true
+                            Layout.alignment: Qt.AlignVCenter
+                            visible: !account.loggedIn
+                            text: "登录后可续期"
+                            font.pixelSize: 11
+                            color: Theme.textTertiary
+                        }
+                        FluText {
+                            Layout.fillWidth: true
+                            Layout.alignment: Qt.AlignVCenter
+                            visible: account.loggedIn
+                            text: "续期会向网易换发一张新的 MUSIC_U（有效期重新计时，旧的立刻失效与否由服务端决定）"
+                            font.pixelSize: 11
+                            color: Theme.textTertiary
+                            wrapMode: Text.WordWrap
+                        }
                     }
                     FluText {
                         Layout.fillWidth: true

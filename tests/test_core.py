@@ -325,6 +325,34 @@ def test_vip_flags_from_type():
     assert vip_flags_from_type(20) == (True, True, False)
 
 
+def test_credential_renew_window():
+    """凭据续期窗口：临近过期才续，关掉时一律不续，老凭据补一次有效期。"""
+    from app.sources.netease import COOKIE_TTL_SECONDS, should_renew
+
+    now = 1_700_000_000
+    day = 86400
+
+    # 还剩 100 天：不续
+    assert should_renew(now + 100 * day, now, 7) is False
+    # 还剩 3 天：进入窗口
+    assert should_renew(now + 3 * day, now, 7) is True
+    # 已经过期 / 正好到点：续
+    assert should_renew(now - day, now, 7) is True
+    assert should_renew(now, now, 7) is True
+    # 窗口边界：正好 7 天算进入窗口，多 1 秒就不算
+    assert should_renew(now + 7 * day, now, 7) is True
+    assert should_renew(now + 7 * day + 1, now, 7) is False
+    # 关闭自动续期（0 或负数）：一律不续
+    assert should_renew(now - day, now, 0) is False
+    assert should_renew(now - day, now, -1) is False
+    # 老版本凭据没有 expires_at：开着就补一次，关着就算了
+    assert should_renew(0, now, 7) is True
+    assert should_renew(0, now, 0) is False
+
+    # 服务端给 MUSIC_U 的 Max-Age 是 180 天，兜底估算与它保持一致
+    assert COOKIE_TTL_SECONDS == 180 * 24 * 3600
+
+
 if __name__ == "__main__":
     import traceback
 
