@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import FluentUI
 import ".."
+import "../ArtistNames.js" as ArtistNames
 
 /*!
     曲目右键 / 更多按钮菜单。
@@ -14,11 +15,15 @@ FluMenu {
     property bool isFavorite: false
     property var playlists: []
 
+    readonly property var artistNames: ArtistNames.split(trackData && trackData.singer
+                                                         ? trackData.singer : "")
+
     signal playNow
     signal playNext
     signal appendToQueue
     signal toggleFav
     signal addToPlaylist(string playlistId)
+    signal viewArtist(string name)
     signal copyInfo
 
     width: 208
@@ -61,6 +66,22 @@ FluMenu {
             FluMenuItem {
                 text: "新建歌单并添加…"
                 onClicked: control.addToPlaylist("__new__")
+            }
+        }
+    }
+
+    FluMenuItem {
+        text: "查看歌手"
+        visible: control.artistNames.length > 0
+        FluMenu {
+            width: 180
+            Repeater {
+                model: control.artistNames
+                delegate: FluMenuItem {
+                    required property string modelData
+                    text: modelData
+                    onClicked: control.viewArtist(modelData)
+                }
             }
         }
     }

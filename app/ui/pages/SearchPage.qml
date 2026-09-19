@@ -4,14 +4,24 @@ import QtQuick.Layouts
 import FluentUI
 import ".."
 import "../components"
+import "../ArtistNames.js" as ArtistNames
 
 /*!
     搜索页：多音源并发搜索 + 来源筛选 + 分页。
+
+    「全部」标签页顶部按网易云的样式置顶一张歌手卡片和一张歌单卡片
+    （``search.topArtist`` / ``search.topPlaylist``），点了直接进歌手页 / 歌单页。
 */
 Item {
     id: control
 
     readonly property var tabs: search.sourceTabs
+    readonly property bool showTops: search.currentSource === "all"
+        && (control.hasArtistCard || control.hasPlaylistCard)
+    readonly property bool hasArtistCard: search.topArtist.id !== undefined
+        && search.topArtist.id !== ""
+    readonly property bool hasPlaylistCard: search.topPlaylist.id !== undefined
+        && search.topPlaylist.id !== ""
 
     ColumnLayout {
         anchors.fill: parent
@@ -146,6 +156,169 @@ Item {
                         cursorShape: Qt.PointingHandCursor
                         onClicked: search.setSource(modelData.id)
                     }
+                }
+            }
+
+            Item { Layout.fillWidth: true }
+        }
+
+        // ── 置顶卡片（歌手 / 歌单，对应网易云的「综合」置顶）────
+        // 高度必须写死：嵌套 RowLayout 里放了 fillHeight 的子项时，
+        // 只给 Layout.preferredHeight 会被 ColumnLayout 当成可拉伸项，
+        // 把下面的结果列表挤成 0 高（要配一个 maximumHeight 才压得住）。
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.preferredHeight: visible ? 92 : 0
+            Layout.maximumHeight: 92
+            visible: control.showTops
+            spacing: 12
+
+            // 歌手
+            Rectangle {
+                objectName: "searchTopArtistCard"
+                Layout.preferredWidth: 300
+                Layout.fillHeight: true
+                radius: Theme.radius
+                visible: control.hasArtistCard
+                color: artistMouse.containsMouse ? Theme.cardHover : Theme.cardBg
+                border.width: 1
+                border.color: Theme.border
+                Behavior on color { ColorAnimation { duration: Theme.durationFast } }
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.margins: 12
+                    spacing: 12
+
+                    Rectangle {
+                        Layout.preferredWidth: 68
+                        Layout.preferredHeight: 68
+                        Layout.alignment: Qt.AlignVCenter
+                        radius: 34
+                        color: Theme.accentSoft
+                        clip: true
+
+                        Image {
+                            anchors.fill: parent
+                            source: control.hasArtistCard ? search.topArtist.cover : ""
+                            visible: source !== ""
+                            fillMode: Image.PreserveAspectCrop
+                            sourceSize.width: 136
+                            sourceSize.height: 136
+                        }
+                        FluIcon {
+                            anchors.centerIn: parent
+                            visible: !(control.hasArtistCard && search.topArtist.cover !== "")
+                            iconSource: FluentIcons.Contact
+                            iconSize: 26
+                            iconColor: Theme.accent
+                        }
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignVCenter
+                        spacing: 3
+
+                        FluText {
+                            Layout.fillWidth: true
+                            text: control.hasArtistCard ? "歌手：" + search.topArtist.name : ""
+                            font.pixelSize: 14
+                            font.weight: Font.DemiBold
+                            color: Theme.textPrimary
+                            elide: Text.ElideRight
+                        }
+                        FluText {
+                            Layout.fillWidth: true
+                            text: {
+                                if (!control.hasArtistCard)
+                                    return ""
+                                var parts = []
+                                if (search.topArtist.music_size > 0)
+                                    parts.push("单曲 " + search.topArtist.music_size)
+                                if (search.topArtist.fans_size > 0)
+                                    parts.push("粉丝 " + ArtistNames.formatCount(search.topArtist.fans_size))
+                                return parts.join("  ·  ")
+                            }
+                            font.pixelSize: 11
+                            color: Theme.textTertiary
+                            elide: Text.ElideRight
+                        }
+                    }
+                }
+
+                MouseArea {
+                    id: artistMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: artist.openArtist(search.topArtist.id, search.topArtist.name)
+                }
+            }
+
+            // 歌单
+            Rectangle {
+                objectName: "searchTopPlaylistCard"
+                Layout.preferredWidth: 300
+                Layout.fillHeight: true
+                radius: Theme.radius
+                visible: control.hasPlaylistCard
+                color: playlistMouse.containsMouse ? Theme.cardHover : Theme.cardBg
+                border.width: 1
+                border.color: Theme.border
+                Behavior on color { ColorAnimation { duration: Theme.durationFast } }
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.margins: 12
+                    spacing: 12
+
+                    CoverArt {
+                        Layout.preferredWidth: 68
+                        Layout.preferredHeight: 68
+                        Layout.alignment: Qt.AlignVCenter
+                        radiusSize: Theme.radiusSmall
+                        source: control.hasPlaylistCard ? search.topPlaylist.cover : ""
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignVCenter
+                        spacing: 3
+
+                        FluText {
+                            Layout.fillWidth: true
+                            text: control.hasPlaylistCard ? "歌单：" + search.topPlaylist.name : ""
+                            font.pixelSize: 14
+                            font.weight: Font.DemiBold
+                            color: Theme.textPrimary
+                            elide: Text.ElideRight
+                        }
+                        FluText {
+                            Layout.fillWidth: true
+                            text: {
+                                if (!control.hasPlaylistCard)
+                                    return ""
+                                var parts = []
+                                if (search.topPlaylist.creator !== "")
+                                    parts.push(search.topPlaylist.creator)
+                                if (search.topPlaylist.track_count > 0)
+                                    parts.push(search.topPlaylist.track_count + " 首")
+                                return parts.join("  ·  ")
+                            }
+                            font.pixelSize: 11
+                            color: Theme.textTertiary
+                            elide: Text.ElideRight
+                        }
+                    }
+                }
+
+                MouseArea {
+                    id: playlistMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: discover.openPlaylist(search.topPlaylist.id, search.topPlaylist.name)
                 }
             }
 

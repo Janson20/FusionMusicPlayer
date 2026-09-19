@@ -190,6 +190,19 @@ FluWindow {
                 // 左上角「返回」发出的是 closeRequested —— 之前没接上，点了没反应
                 onCloseRequested: discover.closePlaylist()
             }
+
+            // 歌手详情覆盖层（点任意地方的歌手名打开），压在歌单详情之上
+            ArtistDetailPanel {
+                id: artistDetail
+                width: parent.width
+                height: parent.height
+                visible: artist.opened
+                x: visible ? 0 : width
+                opacity: visible ? 1 : 0
+                Behavior on x { NumberAnimation { duration: Theme.durationNormal; easing.type: Easing.OutCubic } }
+                Behavior on opacity { NumberAnimation { duration: Theme.durationFast } }
+                onCloseRequested: artist.close()
+            }
         }
 
         // ── 底部播放栏（横跨整个窗口宽度）──────────────
@@ -267,6 +280,8 @@ FluWindow {
         onActivated: {
             if (app.expanded)
                 app.setExpanded(false)
+            else if (artist.opened)
+                artist.close()
             else if (discover.detailId !== "")
                 discover.closePlaylist()
         }

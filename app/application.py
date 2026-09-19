@@ -15,6 +15,7 @@ import FluentUI
 
 from . import paths
 from .bridges.app import AppController
+from .bridges.artist import ArtistController
 from .bridges.discover import DiscoverController
 from .bridges.library import LibraryController
 from .bridges.search import SearchController
@@ -97,6 +98,7 @@ class Application(QObject):
         self.search = SearchController(self.config)
         self.library_bridge = LibraryController(self.config, self.library)
         self.discover = DiscoverController(self.config)
+        self.artist = ArtistController(self.config)
         self.settings = SettingsController(self.config)
         self.app = AppController(self.config)
 
@@ -113,6 +115,7 @@ class Application(QObject):
         ctx.setContextProperty("search", self.search)
         ctx.setContextProperty("library", self.library_bridge)
         ctx.setContextProperty("discover", self.discover)
+        ctx.setContextProperty("artist", self.artist)
         ctx.setContextProperty("settings", self.settings)
         ctx.setContextProperty("app", self.app)
 
@@ -135,6 +138,7 @@ class Application(QObject):
         # 从列表行收藏时，播放栏的爱心状态也要跟着刷新
         self.library_bridge.favoritesChanged.connect(self.player.favoriteStateChanged)
         self.discover.errorOccurred.connect(self.app.warn)
+        self.artist.errorOccurred.connect(self.app.warn)
         self.settings.message.connect(self.app.info)
         self.settings.errorOccurred.connect(self.app.error)
 

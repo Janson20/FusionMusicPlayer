@@ -13,6 +13,7 @@ FMCL 只用到搜索、播放地址、歌词、歌单与登录；这里在不改
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -406,6 +407,165 @@ def playlist_meta(playlist_id: str) -> Dict:
         "play_count": int(pl.get("playCount") or 0),
         "creator": str((pl.get("creator") or {}).get("nickname") or ""),
     }
+
+# ──────────────────────────────────────────────────────────────
+# 歌手页 / 搜索结果置顶
+# ──────────────────────────────────────────────────────────────
+
+# 歌手信息是公开数据，一个会话内基本不变：来回点同一个歌手时不再重复请求
+_ARTIST_CACHE: Dict[str, Dict] = {}
+_ARTIST_CACHE_LOCK = threading.Lock()
+_ARTIST_CACHE_LIMIT = 40
+
+def search_artists(keyword: str, limit: int = 10) -> List[Dict]:
+    """按名字搜索歌手（``/api/search/get`` type=100）。
+
+    这个接口同时给出粉丝数（``fansSize``），是「粉丝」一栏的唯一来源 ——
+    歌手详情接口本身不带粉丝数。
+    """
+    keyword = (keyword or "").strip()
+    src = _wy()
+    if not keyword or src is None:
+        return []
+    resp = _safe(
+        lambda: src._eapi_post(  # noqa: SLF001
+            "/api/search/get",
+            {"s": keyword, "type": 100, "limit": int(limit), "offset": 0},
+        ),
+        {},
+    ) or {}
+    out: List[Dict] = []
+    for item in ((resp.get("result") or {}).get("artists") or []):
+        try:
+            out.append(
+                {
+                    "id": str(item.get("id") or ""),
+                    "name": str(item.get("name") or ""),
+                    "cover": str(item.get("picUrl") or ""),
+                    "alias": [str(a) for a in (item.get("alias") or [])],
+                    "music_size": _to_int(item.get("musicSize")),
+                    "album_size": _to_int(item.get("albumSize")),
+                    "mv_size": _to_int(item.get("mvSize")),
+                    "fans_size": _to_int(item.get("fansSize")),
+                }
+            )
+        except Exception:
+            continue
+    return [a for a in out if a["id"]]
+
+def search_playlists(keyword: str, limit: int = 6) -> List[Dict]:
+    """按关键词搜索歌单（搜索结果置顶卡片用，type=1000）。"""
+    keyword = (keyword or "").strip()
+    src = _wy()
+    if not keyword or src is None:
+        return []
+    resp = _safe(
+        lambda: src._eapi_post(  # noqa: SLF001
+            "/api/search/get",
+            {"s": keyword, "type": 1000, "limit": int(limit), "offset": 0},
+        ),
+        {},
+    ) or {}
+    out: List[Dict] = []
+    for item in ((resp.get("result") or {}).get("playlists") or []):
+        try:
+            out.append(
+                {
+                    "id": str(item.get("id") or ""),
+                    "name": str(item.get("name") or ""),
+                    "cover": str(item.get("coverImgUrl") or ""),
+                    "track_count": _to_int(item.get("trackCount")),
+                    "play_count": _to_int(item.get("playCount")),
+                    "creator": str((item.get("creator") or {}).get("nickname") or ""),
+                }
+            )
+        except Exception:
+            continue
+    return [p for p in out if p["id"]]
+
+def pick_artist(artists: List[Dict], name: str) -> Dict:
+    """在搜索结果里挑最像的那个歌手。
+
+    优先级：完全同名 > 名字互相包含 > 第一个。同名/同前缀有多个时取粉丝多的，
+    避免选到「周杰伦.」这种小号。
+    """
+    if not artists:
+        return {}
+    name = (name or "").strip().lower()
+    if not name:
+        return dict(artists[0])
+
+    def _fans(a: Dict) -> int:
+        return _to_int(a.get("fans_size"))
+
+    exact = [a for a in artists if str(a.get("name", "")).lower() == name]
+    if exact:
+        return dict(max(exact, key=_fans))
+    loose = [
+        a
+        for a in artists
+        if name in str(a.get("name", "")).lower() or str(a.get("name", "")).lower() in name
+    ]
+    if loose:
+        return dict(max(loose, key=_fans))
+    return dict(artists[0])
+
+def artist_page(artist_id: str = "", name: str = "") -> Dict:
+    """歌手页所需的全部数据：歌手信息 + 热门歌曲。
+
+    只给名字时先搜 id（点歌曲里的歌手名走这条路），给了 id 就直接取详情。
+    返回 ``{"id","name","cover","alias","brief_desc","music_size","album_size",
+    "mv_size","fans_size","hot_songs": [MusicInfo]}``；找不到返回 ``{}``。
+    """
+    artist_id = str(artist_id or "").strip()
+    name = str(name or "").strip()
+    if not artist_id and not name:
+        return {}
+    if artist_id:
+        with _ARTIST_CACHE_LOCK:
+            cached = _ARTIST_CACHE.get(artist_id)
+        if cached is not None:
+            return dict(cached)
+
+    page = _safe(lambda: _artist_page_uncached(artist_id, name), {}) or {}
+    if page and page.get("id"):
+        with _ARTIST_CACHE_LOCK:
+            if len(_ARTIST_CACHE) >= _ARTIST_CACHE_LIMIT:
+                _ARTIST_CACHE.clear()
+            _ARTIST_CACHE[str(page["id"])] = dict(page)
+    return page
+
+def _artist_page_uncached(artist_id: str, name: str) -> Dict:
+    src = _wy()
+    if src is None:
+        return {}
+
+    # 搜索接口能给出粉丝数，详情接口给不出，所以在按名字进来时先搜一次
+    match = pick_artist(search_artists(name, 5), name) if name else {}
+    aid = artist_id or str(match.get("id") or "")
+    if not aid:
+        return {}
+    # 只有搜到的确实是同一个歌手时，才敢用它（和它的粉丝数）补字段
+    matched = match if str(match.get("id") or "") == aid else {}
+
+    resp = _safe(lambda: src._eapi_post(f"/api/v1/artist/{aid}", {}), {}) or {}  # noqa: SLF001
+    artist = resp.get("artist") or {}
+    if not artist and not matched:
+        return {}
+
+    page = {
+        "id": str(artist.get("id") or aid),
+        "name": str(artist.get("name") or matched.get("name") or ""),
+        "cover": str(artist.get("picUrl") or matched.get("cover") or ""),
+        "alias": [str(a) for a in (artist.get("alias") or matched.get("alias") or [])],
+        "brief_desc": str(artist.get("briefDesc") or ""),
+        "music_size": _to_int(artist.get("musicSize")) or _to_int(matched.get("music_size")),
+        "album_size": _to_int(artist.get("albumSize")) or _to_int(matched.get("album_size")),
+        "mv_size": _to_int(artist.get("mvSize")) or _to_int(matched.get("mv_size")),
+        "fans_size": _to_int(matched.get("fans_size")),
+        "hot_songs": _parse_songs(src, resp.get("hotSongs") or []),
+    }
+    return page
 
 def _parse_songs(src, songs) -> List[MusicInfo]:
     """把网易云歌曲 JSON 转成 ``MusicInfo``（优先复用音源自身的解析器）。"""

@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import FluentUI
 import ".."
+import "../ArtistNames.js" as ArtistNames
 
 /*!
     曲目行：列表中的单首歌曲。
@@ -12,6 +13,8 @@ import ".."
 */
 Rectangle {
     id: control
+
+    objectName: "trackRow"
 
     required property int index
     required property string uid
@@ -38,6 +41,7 @@ Rectangle {
 
     signal activated
     signal favoriteRequested
+    signal artistRequested(string name)
     signal menuRequested(real globalX, real globalY)
 
     height: 52
@@ -62,6 +66,24 @@ Rectangle {
             left: parent.left
             verticalCenter: parent.verticalCenter
         }
+    }
+
+    // 整行的点击 / 右键区域。必须声明在内容之前：行里的歌手名链接要压在它
+    // 上面才收得到点击（否则点歌手名会被整行的「播放」抢走）。
+    MouseArea {
+        id: rowMouse
+        anchors.fill: parent
+        anchors.rightMargin: 74
+        hoverEnabled: true
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
+        cursorShape: Qt.PointingHandCursor
+        onClicked: function (mouse) {
+            if (mouse.button === Qt.LeftButton)
+                control.activated()
+            else
+                control.menuRequested(mouse.x, mouse.y)
+        }
+        onDoubleClicked: control.activated()
     }
 
     RowLayout {
@@ -128,19 +150,45 @@ Rectangle {
                 }
             }
 
-            FluText {
+            // 歌手名逐个可点（进歌手页），专辑名跟在后面
+            RowLayout {
                 Layout.fillWidth: true
-                text: {
-                    var parts = []
-                    if (control.singer !== "")
-                        parts.push(control.singer)
-                    if (control.showAlbum && control.album !== "")
-                        parts.push(control.album)
-                    return parts.join("  ·  ")
+                spacing: 0
+
+                Repeater {
+                    model: ArtistNames.split(control.singer)
+                    delegate: FluText {
+                        required property string modelData
+                        required property int index
+
+                        objectName: "trackRowArtistLink"
+                        Layout.alignment: Qt.AlignVCenter
+                        Layout.maximumWidth: 190
+                        text: (index > 0 ? " / " : "") + modelData
+                        font.pixelSize: 11
+                        font.underline: artistMouse.containsMouse
+                        color: artistMouse.containsMouse ? Theme.accent : Theme.textTertiary
+                        elide: Text.ElideRight
+
+                        MouseArea {
+                            id: artistMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: control.artistRequested(modelData)
+                        }
+                    }
                 }
-                font.pixelSize: 11
-                color: Theme.textTertiary
-                elide: Text.ElideRight
+
+                FluText {
+                    Layout.fillWidth: true
+                    Layout.alignment: Qt.AlignVCenter
+                    visible: control.showAlbum && control.album !== ""
+                    text: (control.singer !== "" ? "  ·  " : "") + control.album
+                    font.pixelSize: 11
+                    color: Theme.textTertiary
+                    elide: Text.ElideRight
+                }
             }
         }
 
@@ -192,21 +240,5 @@ Rectangle {
             opacity: rowMouse.containsMouse || hovered ? 1 : 0
             onClicked: control.menuRequested(control.width, control.height)
         }
-    }
-
-    MouseArea {
-        id: rowMouse
-        anchors.fill: parent
-        anchors.rightMargin: 74
-        hoverEnabled: true
-        acceptedButtons: Qt.LeftButton | Qt.RightButton
-        cursorShape: Qt.PointingHandCursor
-        onClicked: function (mouse) {
-            if (mouse.button === Qt.LeftButton)
-                control.activated()
-            else
-                control.menuRequested(mouse.x, mouse.y)
-        }
-        onDoubleClicked: control.activated()
     }
 }

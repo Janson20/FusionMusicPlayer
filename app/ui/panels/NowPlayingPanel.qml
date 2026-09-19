@@ -4,6 +4,7 @@ import QtQuick.Layouts
 import FluentUI
 import ".."
 import "../components"
+import "../ArtistNames.js" as ArtistNames
 
 /*!
     展开播放页：大封面 + 滚动歌词 + 完整控制。
@@ -29,6 +30,16 @@ Item {
     }
 
     signal collapseRequested
+
+    // 点歌手名进歌手页。歌手页在主界面那一层，展开播放页盖在它上面，
+    // 所以先收起来再打开，否则打开了个看不见的页面。
+    function openArtist(name) {
+        if (name === "")
+            return
+        if (app.expanded)
+            app.setExpanded(false)
+        artist.openByName(name)
+    }
 
     // ── 事件遮罩 ────────────────────────────────────────
     // 面板根节点只是个普通 Item：空白处不处理鼠标事件，事件会继续往下找
@@ -171,13 +182,36 @@ Item {
                     horizontalAlignment: Text.AlignHCenter
                 }
 
-                FluText {
-                    Layout.fillWidth: true
-                    text: player.artist
-                    font.pixelSize: 13
-                    color: Theme.textSecondary
-                    elide: Text.ElideRight
-                    horizontalAlignment: Text.AlignHCenter
+                // 歌手名可点（进歌手页）
+                RowLayout {
+                    Layout.alignment: Qt.AlignHCenter
+                    spacing: 0
+                    visible: player.artist !== ""
+
+                    Repeater {
+                        model: ArtistNames.split(player.artist)
+                        delegate: FluText {
+                            required property string modelData
+                            required property int index
+
+                            objectName: "nowPlayingArtistLink"
+                            Layout.alignment: Qt.AlignVCenter
+                            Layout.maximumWidth: 220
+                            text: (index > 0 ? " / " : "") + modelData
+                            font.pixelSize: 13
+                            font.underline: npArtistMouse.containsMouse
+                            color: npArtistMouse.containsMouse ? Theme.accent : Theme.textSecondary
+                            elide: Text.ElideRight
+
+                            MouseArea {
+                                id: npArtistMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: control.openArtist(modelData)
+                            }
+                        }
+                    }
                 }
 
                 RowLayout {

@@ -9,7 +9,9 @@
 3. 歌单详情页左上角「返回」发出的 ``closeRequested`` 没有接到任何地方，
    点了没反应（``discover.detailId`` 一直是空不了）；
 4. 展开播放页（``panels/NowPlayingPanel.qml``）：空白处会把鼠标事件放过去、
-   点到底下的导航栏，隐藏歌词后封面区赖在左边，歌词写死靠左。
+   点到底下的导航栏，隐藏歌词后封面区赖在左边，歌词写死靠左；
+5. 歌手页（``panels/ArtistDetailPanel.qml``）：点歌手名进不去、或者点歌手名
+   顺带把整行点播了（整行的 MouseArea 压在歌手名链接上面）。
 
 无显示环境（CI）下需要一个虚拟屏幕::
 
@@ -84,6 +86,16 @@ class UiProbe(Application):
         loop = QEventLoop()
         QTimer.singleShot(ms, loop.quit)
         loop.exec()
+
+    def wait_until(self, predicate, timeout_ms: int = 8000, step: int = 200) -> bool:
+        """等某个条件成立（后台线程的结果要等事件循环转起来）。"""
+        spent = 0
+        while spent < timeout_ms:
+            if predicate():
+                return True
+            self.pump(step)
+            spent += step
+        return bool(predicate())
 
     def visible(self) -> list[str]:
         return sorted(w.title() for w in self.qt_app.allWindows() if w.isVisible())
@@ -279,6 +291,95 @@ class UiProbe(Application):
         self.eval_js("app.setExpanded(false)")
         self.pump(600)
 
+        self.step_artist()
+
+    # ── 歌手页 ──────────────────────────────────────────────
+    def step_artist(self):
+        """歌手页：点歌手名进得去、点行内其它位置仍然播放、搜索置顶卡片接得上。
+
+        曲目与置顶卡片都用注入的数据，不依赖联网 —— 真实接口由音源层的
+        ``netease.artist_page`` 负责，冒烟测试只盯界面接线。
+        """
+        self.eval_js("app.go('search')")
+        self.pump(600)
+        self.inject_search_rows()
+        self.pump(700)
+
+        row = self.top_row()
+        check("搜索列表渲染出曲目行", row is not None)
+        if row is None:
+            self.step_signal_params()
+            return
+
+        # 行里的歌手名：进歌手页，且不会顺带把歌播了
+        links = self.find_items("trackRowArtistLink", row)
+        check("曲目行里的歌手名可以点", len(links) > 0, f"{len(links)} 个")
+        playing_before = self.current_track()
+        if links:
+            self.click_item(links[0])
+            check("点歌手名打开歌手页", self.artist.opened)
+            check("点歌手名不会顺带播放", self.current_track() == playing_before,
+                  f"{playing_before!r} -> {self.current_track()!r}")
+
+        back = self.item("artistBackButton")
+        check("歌手页找得到返回按钮", back is not None)
+        if back is not None:
+            self.click_item(back)
+            self.pump(700)
+            check("点返回关闭歌手页", not self.artist.opened)
+
+        # 行内其它位置仍然是「播放整行」
+        row = self.top_row()
+        if row is not None:
+            self.click_scene(row, 120, 26)
+            self.pump(1200)
+            check("点行内其它位置仍然是播放",
+                  self.current_track() == "测试歌曲 A", f"{self.current_track()!r}")
+            check("点行内其它位置不会打开歌手页", not self.artist.opened)
+
+        # 搜索置顶卡片
+        self.inject_tops()
+        self.pump(800)
+        card = self.item("searchTopArtistCard")
+        check("置顶歌手卡片渲染出来了",
+              card is not None and float(card.property("height")) > 40,
+              f"h={card.property('height') if card is not None else None}")
+        check("置顶卡片没有把结果列表挤掉", self.top_row() is not None)
+        if card is not None:
+            self.click_item(card)
+            check("点置顶卡片打开歌手页",
+                  self.artist.opened and self.artist.artistId == "33699297",
+                  f"id={self.artist.artistId!r}")
+            self.artist.close()
+            self.pump(500)
+
+        # 展开播放页里的歌手名：先收起展开页，再进歌手页
+        self.eval_js("app.setExpanded(true)")
+        self.pump(900)
+        np_links = self.find_items("nowPlayingArtistLink")
+        check("展开播放页里的歌手名可以点", len(np_links) > 0)
+        if np_links:
+            self.click_item(np_links[0])
+            check("点展开页的歌手名会先收起展开页",
+                  not self.eval_value("app.expanded", True))
+            check("展开页点歌手名也能进歌手页", self.artist.opened)
+            self.artist.close()
+            self.pump(500)
+            self.eval_js("app.setExpanded(false)")
+            self.pump(500)
+
+        # 找不到的歌手（跨音源常见）：不能卡在加载中
+        self.artist.openByName("zzz 不存在的歌手 zzz")
+        check("点不存在的歌手时面板先开着",
+              self.artist.opened and self.artist.loading)
+        settled = self.wait_until(lambda: not self.artist.loading, 10000)
+        check("找不到歌手时不会卡在加载中",
+              settled and not self.artist.opened,
+              f"loading={self.artist.loading} opened={self.artist.opened}")
+
+        self.search.clear()
+        self.pump(400)
+
         self.step_signal_params()
 
     # ── 覆盖层 / 合成点击的辅助 ─────────────────────────────
@@ -290,6 +391,69 @@ class UiProbe(Application):
     def click(self, point: QPoint) -> None:
         QTest.mouseClick(self.window, Qt.MouseButton.LeftButton,
                          Qt.KeyboardModifier.NoModifier, point, -1)
+
+    def click_item(self, item) -> None:
+        self.click(self.to_point(item, item.property("width") / 2,
+                                 item.property("height") / 2))
+        self.pump(400)
+
+    def click_scene(self, item, x: float, y: float) -> None:
+        self.click(self.to_point(item, x, y))
+
+    def item(self, name: str, index: int = 0):
+        found = self.find_items(name)
+        return found[index] if len(found) > index else None
+
+    def find_items(self, name: str, root=None) -> list:
+        """按 objectName 找可视项。
+
+        ``Repeater`` 动态创建出来的项（曲目行里的歌手名、展开播放页的歌手名）
+        不在 QObject 子树上，``findChildren`` 找不到，只能走可视项树。
+        """
+        out: list = []
+        stack = [root if root is not None else self.window.property("contentItem")]
+        while stack:
+            node = stack.pop()
+            if node is None:
+                continue
+            if node.objectName() == name:
+                out.append(node)
+            children = getattr(node, "childItems", None)
+            if children is not None:
+                stack.extend(children())
+        return out
+
+    def top_row(self):
+        """搜索页里最上面那一行曲目（在视口内，保证点得到）。"""
+        rows = [r for r in self.find_items("trackRow") if r.isVisible()]
+        rows.sort(key=lambda r: r.mapToItem(None, QPointF(0, 0)).y())
+        return rows[0] if rows else None
+
+    def current_track(self) -> str:
+        return str(self.eval_value("player.currentTrack ? player.currentTrack.name : ''", "") or "")
+
+    def inject_search_rows(self) -> None:
+        """塞两首假歌进搜索列表，免得冒烟测试依赖联网的搜索结果。"""
+        from app.core.models import Track
+
+        self.search._model.set_tracks([
+            Track(source="wy", songmid="probe-1", name="测试歌曲 A",
+                  singer="WOVOP、洛天依", album="探针专辑", interval=215),
+            Track(source="wy", songmid="probe-2", name="测试歌曲 B",
+                  singer="洛天依", album="探针专辑", interval=180),
+        ])
+
+    def inject_tops(self) -> None:
+        """注入搜索置顶卡片的数据（真实数据来自网易云搜索接口）。"""
+        self.search._top_artist = {
+            "id": "33699297", "name": "WOVOP", "cover": "", "alias": [],
+            "music_size": 168, "album_size": 58, "mv_size": 8, "fans_size": 40894,
+        }
+        self.search._top_playlist = {
+            "id": "12582973548", "name": "WOVOP", "cover": "",
+            "track_count": 82, "play_count": 964, "creator": "香香软软的柚鸟夏",
+        }
+        self.search.topsChanged.emit()
 
     def cover_offset(self, panel, cover) -> float | None:
         """封面列中心与面板中心的水平偏差（px）。"""

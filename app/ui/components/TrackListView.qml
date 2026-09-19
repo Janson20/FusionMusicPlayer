@@ -29,9 +29,14 @@ Item {
     signal requestPlayNext(var track)
     signal requestAppend(var track)
     signal requestFavorite(var track)
+    signal artistRequested(string name)
     signal emptyActionTriggered
 
     clip: true
+
+    // 行里的歌手名（或右键菜单的「查看歌手」）点了就进歌手页。
+    // 放在这里而不是各个页面里，是为了「所有地方点歌手名字都能进」。
+    onArtistRequested: function (name) { artist.openByName(name) }
 
     ListView {
         id: listView
@@ -57,6 +62,7 @@ Item {
             showAlbum: control.showAlbum
 
             onActivated: control.trackActivated(index)
+            onArtistRequested: function (name) { control.artistRequested(name) }
             onMenuRequested: function (x, y) {
                 // 用模型行取完整字典：QML 里手拼的 JS 对象会丢掉 types/type_detail，
                 // 那样入库后恢复播放会退化成 128k
@@ -90,6 +96,7 @@ Item {
         onPlayNext: control.requestPlayNext(trackMenu.trackData)
         onAppendToQueue: control.requestAppend(trackMenu.trackData)
         onToggleFav: control.requestFavorite(trackMenu.trackData)
+        onViewArtist: function (name) { control.artistRequested(name) }
         onCopyInfo: {
             var t = trackMenu.trackData
             if (t)

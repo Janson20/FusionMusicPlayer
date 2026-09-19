@@ -10,12 +10,14 @@ from PySide6.QtCore import QObject, Property, Signal, Slot
 
 from ..core.models import Track, TrackListModel
 from ..sources import SOURCE_META, SOURCE_NAMES, search_all
+from ..sources import netease
 
 logger = logging.getLogger(__name__)
 
 class _Emitter(QObject):
     done = Signal(int, object)
     suggestions = Signal(int, object)
+    tops = Signal(int, object)
 
 class SearchController(QObject):
     """并发搜索全部音源，并把结果按来源分页展示。"""
@@ -26,6 +28,7 @@ class SearchController(QObject):
     sourceChanged = Signal()
     historyChanged = Signal()
     suggestionsChanged = Signal()
+    topsChanged = Signal()
 
     MAX_HISTORY = 24
 
@@ -35,6 +38,7 @@ class SearchController(QObject):
         self._emitter = _Emitter(self)
         self._emitter.done.connect(self._on_done)
         self._emitter.suggestions.connect(self._on_suggestions)
+        self._emitter.tops.connect(self._on_tops)
 
         self._model = TrackListModel()
         self._loading = False
@@ -48,6 +52,8 @@ class SearchController(QObject):
         self._history: List[str] = list(config.get("search_history", []) or [])
         self._suggestions: List[str] = []
         self._has_more = False
+        self._top_artist: Dict = {}
+        self._top_playlist: Dict = {}
 
     # ── 属性 ────────────────────────────────────────────────
 
@@ -90,6 +96,16 @@ class SearchController(QObject):
     @Property("QVariantList", notify=suggestionsChanged)
     def suggestions(self):  # noqa: N802
         return list(self._suggestions)
+
+    @Property("QVariant", notify=topsChanged)
+    def topArtist(self):  # noqa: N802
+        """搜索结果置顶的歌手卡片（「全部」标签页显示）。"""
+        return dict(self._top_artist)
+
+    @Property("QVariant", notify=topsChanged)
+    def topPlaylist(self):  # noqa: N802
+        """搜索结果置顶的歌单卡片。"""
+        return dict(self._top_playlist)
 
     @Property("QVariantList", notify=sourceChanged)
     def sourceTabs(self):  # noqa: N802
@@ -154,9 +170,12 @@ class SearchController(QObject):
         self._model.clear()
         self._has_more = False
         self._loading = False
+        self._top_artist = {}
+        self._top_playlist = {}
         self.loadingChanged.emit()
         self.resultsChanged.emit()
         self.sourceChanged.emit()
+        self.topsChanged.emit()
 
     @Slot(str)
     def removeHistory(self, keyword: str) -> None:  # noqa: N802
@@ -184,12 +203,47 @@ class SearchController(QObject):
         seq = self._seq
         page = self._page
         keyword = self._keyword
+        first_page = page == 1
 
         self._loading = True
         self.loadingChanged.emit()
+        if first_page:
+            # 置顶卡片跟着关键词换，先清掉旧结果避免显示上一条关键词的歌手
+            self._top_artist = {}
+            self._top_playlist = {}
+            self.topsChanged.emit()
         threading.Thread(
             target=self._worker, args=(seq, keyword, page), daemon=True, name="search"
         ).start()
+        if first_page:
+            threading.Thread(
+                target=self._top_worker, args=(seq, keyword), daemon=True, name="search-top"
+            ).start()
+
+    def _top_worker(self, seq: int, keyword: str) -> None:
+        """置顶的歌手 / 歌单卡片（只有网易云有这类「歌手实体」）。"""
+        payload: Dict = {}
+        try:
+            artists = netease.search_artists(keyword, 5)
+            if artists:
+                payload["artist"] = netease.pick_artist(artists, keyword)
+        except Exception as e:
+            logger.debug("置顶歌手搜索失败: %s", e)
+        try:
+            playlists = netease.search_playlists(keyword, 1)
+            if playlists:
+                payload["playlist"] = playlists[0]
+        except Exception as e:
+            logger.debug("置顶歌单搜索失败: %s", e)
+        self._emitter.tops.emit(seq, payload)
+
+    @Slot(int, object)
+    def _on_tops(self, seq: int, payload) -> None:
+        if seq != self._seq or not isinstance(payload, dict):
+            return
+        self._top_artist = dict(payload.get("artist") or {})
+        self._top_playlist = dict(payload.get("playlist") or {})
+        self.topsChanged.emit()
 
     def _worker(self, seq: int, keyword: str, page: int) -> None:
         try:

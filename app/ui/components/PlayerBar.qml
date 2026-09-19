@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import FluentUI
 import ".."
+import "../ArtistNames.js" as ArtistNames
 
 /*!
     底部播放栏（对应草图：左侧封面 / 中间播放控制 / 右侧展开箭头）。
@@ -18,6 +19,13 @@ Rectangle {
 
     signal expandToggled
     signal openNowPlaying
+
+    // 点歌手名进歌手页（只取第一位，这里放不下多个名字）
+    function openArtist(text) {
+        var name = ArtistNames.first(text)
+        if (name !== "")
+            artist.openByName(name)
+    }
 
     color: Theme.barBg
 
@@ -126,13 +134,46 @@ Rectangle {
                     elide: Text.ElideRight
                 }
 
+                // 歌手名可点（进歌手页），专辑名跟在后面
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 0
+                    visible: player.artist !== ""
+
+                    FluText {
+                        objectName: "playerBarArtistLink"
+                        Layout.maximumWidth: 200
+                        Layout.alignment: Qt.AlignVCenter
+                        text: player.artist
+                        font.pixelSize: 11
+                        font.underline: barArtistMouse.containsMouse
+                        color: barArtistMouse.containsMouse ? Theme.accent : Theme.textTertiary
+                        elide: Text.ElideRight
+
+                        MouseArea {
+                            id: barArtistMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: control.openArtist(player.artist)
+                        }
+                    }
+
+                    FluText {
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignVCenter
+                        visible: player.album !== ""
+                        text: (player.artist !== "" ? "  ·  " : "") + player.album
+                        font.pixelSize: 11
+                        color: Theme.textTertiary
+                        elide: Text.ElideRight
+                    }
+                }
+
                 FluText {
                     Layout.fillWidth: true
-                    text: {
-                        if (player.artist === "")
-                            return player.title === "" ? "从「搜索」或「发现」挑一首开始" : ""
-                        return player.artist + (player.album !== "" ? "  ·  " + player.album : "")
-                    }
+                    visible: player.artist === ""
+                    text: player.title === "" ? "从「搜索」或「发现」挑一首开始" : ""
                     font.pixelSize: 11
                     color: Theme.textTertiary
                     elide: Text.ElideRight
