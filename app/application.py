@@ -22,6 +22,7 @@ from .bridges.library import LibraryController
 from .bridges.roam import RoamController
 from .bridges.search import SearchController
 from .bridges.settings import SettingsController
+from .bridges.wiki import SongWikiController
 from .config import Config
 from .core.account import AccountManager
 from .core.player import PlayerEngine
@@ -104,6 +105,8 @@ class Application(QObject):
         self.album = AlbumController(self)
         self.roam = RoamController(self.config, self.player, self)
         self.roam.watch_player()
+        self.wiki = SongWikiController(self.player, self)
+        self.wiki.watch_player()
         self.settings = SettingsController(self.config)
         self.app = AppController(self.config)
 
@@ -123,6 +126,7 @@ class Application(QObject):
         ctx.setContextProperty("artist", self.artist)
         ctx.setContextProperty("album", self.album)
         ctx.setContextProperty("roam", self.roam)
+        ctx.setContextProperty("wiki", self.wiki)
         ctx.setContextProperty("settings", self.settings)
         ctx.setContextProperty("app", self.app)
 

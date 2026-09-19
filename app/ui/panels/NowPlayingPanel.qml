@@ -7,15 +7,26 @@ import "../components"
 import "../ArtistNames.js" as ArtistNames
 
 /*!
-    展开播放页：大封面 + 滚动歌词 + 完整控制。
+    展开播放页：大封面 + 滚动歌词 / 歌曲百科 + 完整控制。
 
-    对应草图中底部播放栏右侧的 ^ 展开态。
+    对应草图中底部播放栏右侧的 ^ 展开态。右侧是一块卡片，顶上两个标签页
+    「歌词 / 百科」—— 与网易云客户端的歌曲详情页一致。
 */
 Item {
     id: control
     objectName: "nowPlayingPanel"
 
+    // 右侧卡片是否展开。收起时两侧的弹性空白把封面区推到水平正中。
     property bool showLyrics: true
+
+    // 右侧卡片的标签页：0 = 歌词，1 = 百科
+    property int tab: 0
+
+    //: 标签页定义（``id`` 与上面的 tab 对应）
+    readonly property var tabs: [
+        { "id": 0, "name": "歌词" },
+        { "id": 1, "name": "百科" }
+    ]
 
     // 封面尺寸按可用高度推导（固定值，避免 ColumnLayout 内的循环依赖）
     readonly property int coverSize: Math.max(180, Math.min(320, control.height * 0.34))
@@ -28,6 +39,12 @@ Item {
         default: return Text.AlignHCenter
         }
     }
+
+    // 百科只在「页面真的露出来 + 卡片展开 + 停在百科标签」时才去取数 ——
+    // 否则每切一首歌都要白跑一次接口（还要顺带搜一次歌曲、一次专辑）
+    readonly property bool wikiActive: control.visible && control.showLyrics && control.tab === 1
+    onWikiActiveChanged: wiki.setActive(control.wikiActive)
+    Component.onCompleted: wiki.setActive(control.wikiActive)
 
     signal collapseRequested
 
@@ -102,14 +119,8 @@ Item {
             Layout.alignment: Qt.AlignVCenter
         }
 
-        FluToggleSwitch {
-            Layout.alignment: Qt.AlignVCenter
-            text: "歌词"
-            checked: control.showLyrics
-            textRight: false
-            clickListener: function () { control.showLyrics = !control.showLyrics }
-        }
-
+        // 歌词 / 百科的切换挪进了右侧卡片顶部（与歌曲详情页一致），
+        // 这里只留「收起」，卡片整体显示与否由底部控制条上的按钮管。
         FluIconButton {
             objectName: "nowPlayingCollapseButton"
             Layout.preferredWidth: 34
@@ -284,8 +295,9 @@ Item {
             visible: !control.showLyrics
         }
 
-        // 右：歌词
+        // 右：歌词 / 百科（顶部两个标签页，与歌曲详情页一致）
         Rectangle {
+            id: rightCard
             Layout.fillWidth: true
             Layout.minimumWidth: 260
             Layout.fillHeight: true
@@ -296,15 +308,64 @@ Item {
             border.color: Theme.border
             clip: true
 
+            // ── 标签栏 ──────────────────────────────────────
+            RowLayout {
+                id: tabBar
+                anchors {
+                    top: parent.top
+                    left: parent.left
+                    right: parent.right
+                    margins: 14
+                }
+                spacing: 8
+
+                Repeater {
+                    model: control.tabs
+                    delegate: Rectangle {
+                        objectName: "nowPlayingTab"
+                        required property var modelData
+
+                        implicitWidth: tabLabel.implicitWidth + 26
+                        implicitHeight: 28
+                        radius: 14
+                        color: control.tab === modelData.id
+                            ? Theme.accent
+                            : (tabMouse.containsMouse ? Theme.accentSoft : (Theme.dark ? "#252431" : "#F0EFF7"))
+                        Behavior on color { ColorAnimation { duration: Theme.durationFast } }
+
+                        FluText {
+                            id: tabLabel
+                            anchors.centerIn: parent
+                            text: modelData.name
+                            font.pixelSize: 12
+                            font.weight: control.tab === modelData.id ? Font.DemiBold : Font.Normal
+                            color: control.tab === modelData.id ? Theme.accentText : Theme.textSecondary
+                        }
+
+                        MouseArea {
+                            id: tabMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: control.tab = modelData.id
+                        }
+                    }
+                }
+
+                Item { Layout.fillWidth: true }
+            }
+
+            // ── 歌词 ────────────────────────────────────────
             ListView {
                 id: lyricView
                 objectName: "lyricView"
                 anchors.fill: parent
-                anchors.topMargin: 90
-                anchors.bottomMargin: 90
+                anchors.topMargin: 62
+                anchors.bottomMargin: 74
                 // 左右留白取一样宽，居中排版才不会整体偏右
                 anchors.leftMargin: 20
                 anchors.rightMargin: 20
+                visible: control.tab === 0
                 clip: true
                 spacing: 6
                 model: player.lyricLines
@@ -373,7 +434,7 @@ Item {
             // 无歌词占位
             ColumnLayout {
                 anchors.centerIn: parent
-                visible: !player.hasLyrics
+                visible: control.tab === 0 && !player.hasLyrics
                 spacing: 10
 
                 FluIcon {
@@ -385,6 +446,90 @@ Item {
                 FluText {
                     Layout.alignment: Qt.AlignHCenter
                     text: player.loading ? "正在获取歌词…" : "暂无歌词"
+                    font.pixelSize: 13
+                    color: Theme.textTertiary
+                }
+            }
+
+            // ── 歌曲百科 ────────────────────────────────────
+            Flickable {
+                id: wikiPane
+                objectName: "songWikiPane"
+                anchors.fill: parent
+                anchors.topMargin: 58
+                anchors.bottomMargin: 16
+                anchors.leftMargin: 14
+                anchors.rightMargin: 14
+                visible: control.tab === 1
+                clip: true
+                contentWidth: width
+                contentHeight: wikiColumn.height + 8
+                boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: FluScrollBar { }
+
+                ColumnLayout {
+                    id: wikiColumn
+                    width: wikiPane.width
+                    spacing: 2
+
+                    FluText {
+                        Layout.leftMargin: 10
+                        Layout.topMargin: 4
+                        Layout.bottomMargin: 8
+                        text: "音乐百科"
+                        font.pixelSize: 16
+                        font.weight: Font.DemiBold
+                        color: Theme.textPrimary
+                    }
+
+                    Repeater {
+                        model: wiki.rows
+                        delegate: RowLayout {
+                            objectName: "songWikiRow"
+                            required property var modelData
+
+                            Layout.fillWidth: true
+                            Layout.leftMargin: 10
+                            Layout.rightMargin: 10
+                            Layout.topMargin: 5
+                            Layout.bottomMargin: 5
+                            spacing: 14
+
+                            FluText {
+                                Layout.preferredWidth: 68
+                                Layout.alignment: Qt.AlignTop
+                                text: modelData.label
+                                font.pixelSize: 13
+                                color: Theme.textTertiary
+                            }
+
+                            FluText {
+                                Layout.fillWidth: true
+                                text: modelData.value
+                                font.pixelSize: 13
+                                color: Theme.textPrimary
+                                wrapMode: Text.WordWrap
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 无百科占位（可能是还没开始播放，也可能网易云没收录）
+            ColumnLayout {
+                anchors.centerIn: parent
+                visible: control.tab === 1 && !wiki.hasRows
+                spacing: 10
+
+                FluIcon {
+                    Layout.alignment: Qt.AlignHCenter
+                    iconSource: FluentIcons.KnowledgeArticle
+                    iconSize: 40
+                    iconColor: Theme.dark ? "#3A3846" : "#CFCCE0"
+                }
+                FluText {
+                    Layout.alignment: Qt.AlignHCenter
+                    text: wiki.loading ? "正在获取百科…" : wiki.hint
                     font.pixelSize: 13
                     color: Theme.textTertiary
                 }
@@ -514,13 +659,15 @@ Item {
                 onClicked: player.next()
             }
 
+            // 收起 / 展开右侧卡片（歌词与百科在一起），收起后封面区水平居中
             FluIconButton {
+                objectName: "nowPlayingPanelToggle"
                 Layout.preferredWidth: 36
                 Layout.preferredHeight: 36
                 iconSize: 16
                 iconSource: FluentIcons.MusicInfo
                 iconColor: control.showLyrics ? Theme.accent : Theme.textSecondary
-                text: "歌词"
+                text: control.showLyrics ? "隐藏歌词与百科" : "显示歌词与百科"
                 onClicked: control.showLyrics = !control.showLyrics
             }
         }

@@ -379,6 +379,151 @@ def test_album_title_matching():
     assert pick_album([], "x") == {}
 
 
+# ──────────────────────────────────────────────────────────────
+# 歌曲百科
+# ──────────────────────────────────────────────────────────────
+
+
+def test_song_wiki_parsing():
+    """百科区块解析：取值位置随字段类型而变，行顺序由客户端定。
+
+    网易云把「语种 / BPM」放在 ``uiElement.textLinks``，「曲风 / 推荐标签」这类
+    放在 ``resources[].uiElement.mainTitle``；而「发行时间 / 发行版本」根本不在
+    这个接口里（来自专辑详情），要由客户端插在「语种」和「BPM」中间。
+    """
+    from app.sources.netease import parse_song_wiki
+
+    payload = {
+        "code": 200,
+        "data": {
+            "blocks": [
+                {"code": "SONG_PLAY_ABOUT_MUSIC_MEMORY", "creatives": []},
+                {
+                    "code": "SONG_PLAY_ABOUT_SONG_BASIC",
+                    "creatives": [
+                        {
+                            "creativeType": "songTag",
+                            "uiElement": {"mainTitle": {"title": "曲风"}},
+                            "resources": [
+                                {"uiElement": {"mainTitle": {"title": "二次元-歌声合成"}}}
+                            ],
+                        },
+                        {
+                            "creativeType": "language",
+                            "uiElement": {"mainTitle": {"title": "语种"},
+                                           "textLinks": [{"text": "国语"}]},
+                        },
+                        {
+                            "creativeType": "bpm",
+                            "uiElement": {"mainTitle": {"title": "BPM"},
+                                           "textLinks": [{"text": "59"}]},
+                        },
+                        {
+                            "creativeType": "songBizTag",
+                            "uiElement": {"mainTitle": {"title": "推荐标签"}},
+                            "resources": [
+                                {"uiElement": {"mainTitle": {"title": "思念"}}},
+                                {"uiElement": {"mainTitle": {"title": "欢快"}}},
+                            ],
+                        },
+                        # 乐谱块只是「上传乐谱」的入口，不是百科内容，必须丢掉
+                        {
+                            "creativeType": "sheet",
+                            "uiElement": {"mainTitle": {"title": "暂无乐谱"}},
+                        },
+                    ],
+                },
+                # 同一个响应里还有相似歌曲 / 相关歌单，它们不属于音乐百科面板
+                {
+                    "code": "SONG_PLAY_ABOUT_SIMILAR_SONG",
+                    "creatives": [
+                        {"resources": [{"uiElement": {"mainTitle": {"title": "不相干的歌"}}}]}
+                    ],
+                },
+            ]
+        },
+    }
+    rows = parse_song_wiki(payload, {"publish_text": "2018-11-30",
+                                     "version": "录音室版"})["rows"]
+
+    assert [r["label"] for r in rows] == [
+        "曲风", "语种", "发行时间", "发行版本", "BPM", "推荐标签",
+    ]
+    assert rows[0]["value"] == "二次元·歌声合成"  # 两级曲风画成「父类·子类」
+    assert rows[2]["value"] == "2018-11-30"
+    assert rows[3]["value"] == "录音室版"
+    assert rows[5]["value"] == "思念、欢快"
+    assert all("不相干的歌" not in r["value"] for r in rows)
+
+
+def test_song_wiki_edge_cases():
+    """没有数据时返回空字典（界面显示空态），有数据时服务端的标题优先。"""
+    from app.sources.netease import parse_song_wiki
+
+    assert parse_song_wiki({}) == {}
+    assert parse_song_wiki(None) == {}
+    assert parse_song_wiki({"data": {"blocks": []}}) == {}
+    # 空壳 creative（有类型没内容）不算数据
+    assert parse_song_wiki({"data": {"blocks": [
+        {"code": "SONG_PLAY_ABOUT_SONG_BASIC", "creatives": [
+            {"creativeType": "language", "uiElement": {"mainTitle": {"title": "语种"}}},
+        ]},
+    ]}}) == {}
+    # 专辑那边拿到了发行信息，就算百科接口什么都没给，也算有内容
+    assert parse_song_wiki({}, {"publish_text": "2020-01-01"})["rows"] == [
+        {"label": "发行时间", "value": "2020-01-01"},
+    ]
+
+    # 多条曲风用「/」分开；服务端改了字段名这边跟着改
+    payload = {"data": {"blocks": [{"code": "SONG_PLAY_ABOUT_SONG_BASIC", "creatives": [
+        {
+            "creativeType": "songTag",
+            "uiElement": {"mainTitle": {"title": "风格"}},
+            "resources": [
+                {"uiElement": {"mainTitle": {"title": "流行-华语流行"}}},
+                {"uiElement": {"mainTitle": {"title": "摇滚-流行摇滚"}}},
+            ],
+        },
+    ]}]}}
+    assert parse_song_wiki(payload)["rows"] == [
+        {"label": "风格", "value": "流行·华语流行 / 摇滚·流行摇滚"},
+    ]
+
+
+def test_pick_wiki_song():
+    """别的音源按名字找网易云的歌：歌名 + 时长两道关，完全同名的优先。"""
+    from app.sources.base import MusicInfo
+    from app.sources.netease import pick_wiki_song
+
+    def mi(name, songmid, interval):
+        return MusicInfo(name=name, singer="歌手", source="wy",
+                         songmid=songmid, interval=interval)
+
+    songs = [
+        mi("晴天（深情版）", "1", 250),
+        mi("晴天", "2", 300),
+        mi("晴天", "3", 200),
+    ]
+    # 完全同名优先，哪怕它在结果里排后面
+    assert pick_wiki_song(songs, "晴天", 300).songmid == "2"
+    # 同名的时长都不对时，退到「名字互相包含」的那首
+    assert pick_wiki_song(songs, "晴天", 250).songmid == "1"
+    # 时长对得上就按同名 + 时长挑
+    assert pick_wiki_song(songs, "晴天", 200).songmid == "3"
+    # 时长对不上的一律不要（翻唱 / Live 就是这么被挡掉的）
+    assert pick_wiki_song([mi("起风了", "7", 200)], "起风了", 325) is None
+
+    # 没有时长可佐证时只认完全同名：否则「不存在的歌」会匹配到
+    # 搜索结果里那个碰巧包含这几个字的名字
+    assert pick_wiki_song(songs, "晴天", 0).songmid == "2"
+    assert pick_wiki_song([mi("不存在的歌（Live）", "9", 180)], "不存在的歌", 0) is None
+    assert pick_wiki_song([mi("不存在的歌（Live）", "9", 180)], "不存在的歌", 180).songmid == "9"
+
+    # 空输入
+    assert pick_wiki_song([], "晴天", 100) is None
+    assert pick_wiki_song(songs, "", 100) is None
+
+
 def test_roam_refill_rules():
     """漫游续歌的时机：早了会断，晚了会疯了一样往队列里塞歌。"""
     from app.core.roam import clean_reason, needs_refill, pick_playable

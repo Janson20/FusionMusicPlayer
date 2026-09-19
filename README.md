@@ -12,27 +12,31 @@
 
 完全对照设计草图：标题栏（品牌 + 设置按钮 + 系统按钮）、左侧标签页导航、
 主界面、底部播放栏（封面 / 传输控件 / 展开箭头），底部栏可向上展开为
-「大封面 + 滚动歌词」的播放页。
+「大封面 + 歌词 / 歌曲百科」的播放页。
 
 | 发现音乐 | 搜索 |
 |---|---|
 | ![发现音乐](docs/screenshots/discover.png) | ![搜索](docs/screenshots/search.png) |
 
-| 展开播放页（歌词） | 歌单详情 |
+| 展开播放页（歌词） | 展开播放页（歌曲百科） |
 |---|---|
-| ![播放页](docs/screenshots/now-playing.png) | ![歌单详情](docs/screenshots/playlist-detail.png) |
+| ![播放页](docs/screenshots/now-playing.png) | ![歌曲百科](docs/screenshots/song-wiki.png) |
 
-| 我的音乐 | 播放队列 |
+| 歌单详情 | 我的音乐 |
 |---|---|
-| ![我的音乐](docs/screenshots/library.png) | ![播放队列](docs/screenshots/queue.png) |
+| ![歌单详情](docs/screenshots/playlist-detail.png) | ![我的音乐](docs/screenshots/library.png) |
 
-| 设置 | 网易云登录 |
+| 播放队列 | 设置 |
 |---|---|
-| ![设置](docs/screenshots/settings.png) | ![登录](docs/screenshots/login.png) |
+| ![播放队列](docs/screenshots/queue.png) | ![设置](docs/screenshots/settings.png) |
 
-| 浅色主题 | 折叠导航 |
+| 网易云登录 | 浅色主题 |
 |---|---|
-| ![浅色主题](docs/screenshots/light-theme.png) | ![折叠导航](docs/screenshots/compact-nav.png) |
+| ![登录](docs/screenshots/login.png) | ![浅色主题](docs/screenshots/light-theme.png) |
+
+| 折叠导航 | |
+|---|---|
+| ![折叠导航](docs/screenshots/compact-nav.png) | |
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -144,6 +148,23 @@ set FUSION_MUSIC_HOME=D:\Music\FusionData && python main.py
 * 当前行自动滚到中央、高亮、逐行平滑过渡
 * 歌词文字**默认居中**，可在「设置 → 歌词 → 对齐方式」改成靠左 / 靠右
 
+### 歌曲百科
+* 展开播放页右侧的卡片上有「歌词 / 百科」两个标签页，与网易云客户端的歌曲详情页一致
+* 曲风 / 语种 / BPM / 推荐标签 / 获奖成就 / 影视节目 / 乐评来自网易云的
+  **百科区块页**（`/api/song/play/about/block/page`，走 eapi 通道）；
+  同一个响应里还有相似歌曲与相关歌单，不属于这个面板，直接丢掉
+* 「**发行时间 / 发行版本**」根本不在百科接口里 —— 它们是专辑详情的
+  `publishTime` 与 `subType`（实测 2026-09-19：「塔与少女的无题诗」→ `2018-11-30` /
+  `录音室版`，与客户端显示一致），所以在这里合流。**行的顺序也由客户端定**
+  （发行信息插在「语种」和「BPM」中间），不跟着服务端返回的顺序走
+* 「曲风」是 `父类-子类` 的两级结构，按客户端的画法渲染成 `二次元·歌声合成`
+* 其它音源（QQ / 酷我 / 酷狗 / 咪咕 / 本地文件）没有网易云的歌曲 id，
+  按「歌名 + 歌手」搜一次再**核对歌名与时长**（15 秒容差）后才认，
+  核对不过就当作这首歌没有百科 —— 与歌手页 / 专辑页同一套「按名字定位」思路
+* **懒加载**：只有面板展开、且真的停在百科标签上时才去取数，
+  否则每切一首歌都要白跑一次请求（还顺带搜一次歌曲、一次专辑）
+* 换歌时旧数据立刻作废（不这么做，切回百科的那一瞬间会先闪一下上一首的百科）
+
 ### 设置
 外观 / 播放 / 音源 / 账号 / 歌词 / 本地音乐 / 存储 / 关于，共 8 个分区。
 
@@ -153,7 +174,7 @@ set FUSION_MUSIC_HOME=D:\Music\FusionData && python main.py
 
 ```bash
 python main.py                       # 运行
-python tests/test_core.py            # 核心逻辑回归（离线，25 项）
+python tests/test_core.py            # 核心逻辑回归（离线，32 项）
 python tests/test_ui_smoke.py        # QML 界面冒烟（需要显示环境）
 python tools/check_qml_signals.py    # QML 信号处理器静态检查
 python tools/account_probe.py        # 排查网易云账号识别问题（不打印 Cookie）
@@ -161,16 +182,16 @@ python tools/account_probe.py        # 排查网易云账号识别问题（不�
 
 `tests/test_core.py` 覆盖凭据加密仓库（往返、篡改检测、缺文件）、
 LRC 解析（补零、offset、一行多标签、翻译配对、当前行二分与缓存）、
-播放队列（四种播放模式、洗牌不重复、历史回溯、增删移动、序列化）
+播放队列（四种播放模式、洗牌不重复、历史回溯、增删移动、序列化）、
+歌曲百科解析（取值位置随字段类型而变、行顺序、空数据降级、按名字选曲核对）
 与曲目模型，**不依赖 Qt 界面也不联网**，可直接交给 pytest。
-
-- **测试**：`tests/test_core.py`（凭据加密、LRC 解析、播放队列，24 项，离线可跑）
 
 `tests/test_ui_smoke.py` 会启动真实界面并校验窗口、导航与覆盖层行为，守住这些
 曾经真实出现过的缺陷：设置 / 登录窗口跟着主窗口一起弹出来；关闭后无法再打开
 （`Cannot call method 'showWindow' of null`）；歌单详情页左上角「返回」点了没反应
 （信号发了但没人接）；展开播放页与歌单详情覆盖层的空白处会把鼠标事件放过去、
-点到底下的导航栏；隐藏歌词后封面区赖在左边不居中；歌词写死靠左；点歌手名 / 专辑名
+点到底下的导航栏；隐藏歌词后封面区赖在左边不居中；歌词写死靠左；百科标签页切过去
+歌词还盖在原地、或者没打开百科页就去联网取数；点歌手名 / 专辑名
 进不去对应页面（或者反过来，被整行的「播放」抢走点击；再或者层级放错，
 打开了却盖在底下看不见）；漫游刚点开始就自己关掉（换队列时「当前曲目」还是上一首，
 被自己的交棒判断误伤）。**它只在本地跑**，不进 CI：
@@ -361,7 +382,7 @@ FusionMusicPlayer/
 │   ├── sources/                 音源层
 │   │   ├── __init__.py          惰性注册表 + 跨源兜底 + 网易云账号门面
 │   │   ├── base.py utils.py wy.py …   取自 FMCL（见 NOTICE.md）
-│   │   └── netease.py           发现页补充接口（eapi 通道）+ 翻译歌词
+│   │   └── netease.py           网易云补充接口（发现页 / 歌词翻译 / 歌曲百科）
 │   ├── core/
 │   │   ├── models.py            Track 模型 + QML 列表模型
 │   │   ├── queue.py             单一队列与播放模式
@@ -381,6 +402,7 @@ FusionMusicPlayer/
 │   │   ├── artist.py            歌手页（按 id 或名字打开）
 │   │   ├── album.py             专辑页（按 id 或名字打开）
 │   │   ├── roam.py              漫游流（取数 + 自动续歌）
+│   │   ├── wiki.py              歌曲百科（懒加载 + 跟着当前曲目走）
 │   │   └── settings.py          设置与缓存管理
 │   └── ui/                      QML 界面
 │       ├── Main.qml qmldir Theme.qml ArtistNames.js
@@ -431,6 +453,9 @@ FMCL 的音乐模块是 `customtkinter` + `pygame.mixer`，UI 约 4300 行不可
   请优先使用扫码或短信验证码。
 * 未登录时最高音质为 128K；无损 / Hi-Res 需要对应会员。
 * 热搜接口在部分环境不可用，此时发现页会自动省略该区块。
+* 歌曲百科是网易云独有的数据。其它音源的曲目只能按「歌名 + 歌手」找网易云里的
+  同款歌，**核对不过就没有百科可显示**（翻唱、时长差 15 秒以上、网易云没收录都算），
+  此时百科页显示空态而不是弹提示 —— 不该因为查不到资料打断听歌。
 * `weapi` 域名在本机环境常被风控拦截返回空响应，因此所有补充接口都走 eapi 通道
   （与 FMCL 注释中的观察一致）。
 * 播放版权内容依赖第三方平台的公开接口，稳定性不受本项目控制。

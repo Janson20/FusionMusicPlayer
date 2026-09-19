@@ -10,9 +10,11 @@
    点了没反应（``discover.detailId`` 一直是空不了）；
 4. 展开播放页（``panels/NowPlayingPanel.qml``）：空白处会把鼠标事件放过去、
    点到底下的导航栏，隐藏歌词后封面区赖在左边，歌词写死靠左；
-5. 歌手页（``panels/ArtistDetailPanel.qml``）：点歌手名进不去、或者点歌手名
+5. 展开播放页的「百科」标签页：切过去歌词还盖在原地、切回来回不去，以及
+   没打开百科页就去联网取数（每切一首歌白跑三个请求）；
+6. 歌手页（``panels/ArtistDetailPanel.qml``）：点歌手名进不去、或者点歌手名
    顺带把整行点播了（整行的 MouseArea 压在歌手名链接上面）；
-6. 专辑页（``panels/AlbumDetailPanel.qml``）：同上，另外专辑页必须盖在歌单页
+7. 专辑页（``panels/AlbumDetailPanel.qml``）：同上，另外专辑页必须盖在歌单页
    之上、歌手页必须盖在专辑页之上，否则点进去是个看不见的页面。
 
 无显示环境（CI）下需要一个虚拟屏幕::
@@ -293,10 +295,56 @@ class UiProbe(Application):
         self.settings.set("lyrics.alignment", "center")
         self.pump(400)
 
+        self.step_song_wiki(panel)
+
         self.eval_js("app.setExpanded(false)")
         self.pump(600)
 
         self.step_artist()
+
+    # ── 歌曲百科标签页 ──────────────────────────────────────
+    def step_song_wiki(self, panel):
+        """百科标签页：切得过去、切得回来、切过去才去取数。
+
+        真实数据来自网易云的百科区块页（``netease.song_wiki``），这里塞两行假的
+        —— 冒烟测试不联网。要守住的是三件曾经很容易做错的事：标签页点了没反应、
+        切到百科后歌词还留在原地盖着、以及**没打开百科页就去联网取数**
+        （每切一首歌白跑三个请求）。
+        """
+        tabs = self.find_items("nowPlayingTab")
+        check("右侧卡片上有「歌词 / 百科」两个标签", len(tabs) == 2, f"{len(tabs)} 个")
+
+        self.inject_wiki_rows()
+        panel.setProperty("tab", 1)
+        self.pump(700)
+
+        lyric_view = self.window.findChild(QObject, "lyricView")
+        pane = self.window.findChild(QObject, "songWikiPane")
+        check("百科面板在切过去后显示", pane is not None and pane.isVisible())
+        check("切到百科后歌词让位", lyric_view is not None and not lyric_view.isVisible())
+
+        rows = self.find_items("songWikiRow")
+        check("百科面板按行渲染出来", len(rows) == 2, f"{len(rows)} 行")
+        # find_items 是栈式遍历，行的顺序不保证，拼起来一起看
+        texts = [t for row in rows for t in self.row_texts(row)]
+        check("百科行有标签和值",
+              all(t in texts for t in ("曲风", "探针曲风", "BPM", "120")), f"{texts}")
+
+        # 面板没展开时不该去取数（这里是「停在百科但收起了卡片」）
+        check("百科标签下 wikiActive 为真", panel.property("wikiActive") is True)
+        panel.setProperty("showLyrics", False)
+        self.pump(400)
+        check("收起卡片后不再取数", panel.property("wikiActive") is False)
+        panel.setProperty("showLyrics", True)
+        self.pump(400)
+        check("重新展开后又开始取数", panel.property("wikiActive") is True)
+
+        panel.setProperty("tab", 0)
+        self.pump(500)
+        check("切回歌词标签后歌词回来",
+              lyric_view is not None and lyric_view.isVisible())
+        check("切回歌词后百科面板让位", pane is not None and not pane.isVisible())
+        check("切回歌词后不再取数", panel.property("wikiActive") is False)
 
     # ── 歌手页 ──────────────────────────────────────────────
     def step_artist(self):
@@ -633,6 +681,32 @@ class UiProbe(Application):
         self.player._lyric_index = 1
         self.player.lyricChanged.emit()
         self.player.lyricIndexChanged.emit()
+
+    def inject_wiki_rows(self) -> None:
+        """塞两行假的百科（真数据来自网易云的百科区块页，冒烟测试不联网）。
+
+        此刻播放器还没有当前曲目，``wiki`` 的「当前曲目 uid」是空串，所以这份
+        注入不会在切换标签时被它的换歌判断清掉。
+        """
+        self.wiki._rows = [
+            {"label": "曲风", "value": "探针曲风"},
+            {"label": "BPM", "value": "120"},
+        ]
+        self.wiki.changed.emit()
+
+    def row_texts(self, item) -> list[str]:
+        """收集一个可视项子树里的所有 ``text``（百科行的标签与值）。"""
+        out: list[str] = []
+        stack = list(item.childItems()) if hasattr(item, "childItems") else []
+        while stack:
+            node = stack.pop()
+            value = node.property("text")
+            if isinstance(value, str) and value:
+                out.append(value)
+            children = getattr(node, "childItems", None)
+            if children is not None:
+                stack.extend(children())
+        return out
 
     def lyric_alignment(self, expected) -> bool | None:
         """第一条歌词行的水平对齐是否等于 expected；没有渲染出来时返回 None。

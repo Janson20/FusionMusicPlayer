@@ -18,7 +18,7 @@ import threading
 import time
 from typing import Dict, List, Optional, Tuple
 
-from .base import MusicInfo
+from .base import MusicInfo, duration_matches
 from .wy import NetEaseMusicSource
 
 logger = logging.getLogger(__name__)
@@ -816,7 +816,8 @@ def album_page(album_id: str = "", name: str = "", artist: str = "") -> Dict:
 
     只给名字时先搜 id（点歌曲里的专辑名走这条路），给了 id 就直接取详情。
     返回 ``{"id","name","cover","artist_names","artists","publish_text","company",
-    "type_text","size","description","songs": [MusicInfo]}``；找不到返回 ``{}``。
+    "type_text","version","size","description","songs": [MusicInfo]}``；找不到
+    返回 ``{}``。
     """
     album_id = str(album_id or "").strip()
     name = str(name or "").strip()
@@ -877,10 +878,270 @@ def _album_page_uncached(album_id: str, name: str, artist: str) -> Dict:
         "type_text": ALBUM_TYPE_LABELS.get(
             str(album.get("type") or "").strip().lower(), str(album.get("type") or "")
         ),
+        # 「录音室版 / 现场版」这类发行版本；歌曲百科要用（见 song_release）
+        "version": str(album.get("subType") or ""),
         "size": _to_int(album.get("size")),
         "description": str(album.get("description") or album.get("briefDesc") or ""),
         "songs": _parse_songs(src, resp.get("songs") or []),
     }
+    return page
+
+# ──────────────────────────────────────────────────────────────
+# 歌曲百科（展开播放页的「百科」标签页）
+# ──────────────────────────────────────────────────────────────
+#
+# 网易云把歌曲百科塞在一个「区块页」接口里：一次请求同时给出「音乐百科」
+# 「回忆坐标」「相似歌曲」「相关歌单」四种区块，每个区块里是一串 **creative**
+# （曲风 / 语种 / BPM / 推荐标签 / 获奖成就 / 影视节目 / 乐评 …）。
+#
+# 结构固定但层级很深，而且**取值位置随字段类型而变**：
+#
+#     creative.uiElement.textLinks[].text              语种 / BPM
+#     creative.resources[].uiElement.mainTitle.title   曲风 / 推荐标签 / 获奖 …
+#
+# 行的**顺序由这里定**，不跟着服务端走：官方客户端把「发行时间 / 发行版本」
+# 插在「语种」和「BPM」中间，而这两项压根不在百科接口里 —— 它们来自专辑详情
+# （``publishTime`` 与 ``subType``），所以要在这里合流。
+#
+# 以上都是实测（2026-09-19，eapi 通道）的结果。另有几件当时顺手试过的事值得记：
+# ``/api/song/wiki/{summary,detail,get}`` 一类路径在这台机器上全是 404（文档里
+# 那个 ``/song/wiki/summary`` 只是 ``block/page`` 的别名），weapi 域名照旧返回
+# 空响应，所以这条链路也走 eapi。
+
+WIKI_ENDPOINT = "/api/song/play/about/block/page"
+#: 音乐百科所在区块的 code（同一个响应里还有相似歌曲、相关歌单等）
+WIKI_BASIC_BLOCK = "SONG_PLAY_ABOUT_SONG_BASIC"
+
+#: 面板里的行顺序：``(取值键, 默认标题)``。
+#: 服务端给不出标题时用默认标题，给得出就用服务端的（它改了名字这边跟着变）。
+WIKI_FIELDS: Tuple[Tuple[str, str], ...] = (
+    ("songTag", "曲风"),
+    ("language", "语种"),
+    # 这两项由 :func:`song_release` 从专辑详情补进来，不是百科接口的字段
+    ("release_time", "发行时间"),
+    ("release_version", "发行版本"),
+    ("bpm", "BPM"),
+    ("songBizTag", "推荐标签"),
+    ("songAward", "获奖成就"),
+    ("entertainment", "影视节目"),
+    ("songComment", "乐评"),
+)
+
+#: 「曲风」是 ``父类-子类`` 的两级结构，官方客户端画成 ``父类·子类``
+GENRE_LEVEL_SEPARATOR = "-"
+GENRE_LEVEL_JOIN = "·"
+#: 多值之间的分隔：曲风用「/」分开几条风格链，其余按顿号列举
+GENRE_JOIN = " / "
+VALUE_JOIN = "、"
+
+_WIKI_CACHE: Dict[str, Dict] = {}
+_WIKI_CACHE_LOCK = threading.Lock()
+
+def _node_title(node) -> str:
+    """取 ``{"mainTitle": {"title": …}}`` 里的标题（网易云 ``uiElement`` 的通用形状）。"""
+    if not isinstance(node, dict):
+        return ""
+    main = node.get("mainTitle")
+    if not isinstance(main, dict):
+        return ""
+    return str(main.get("title") or "").strip()
+
+def _node_text(node) -> str:
+    """取 ``textLinks`` 里的一条文字。"""
+    if not isinstance(node, dict):
+        return ""
+    return str(node.get("text") or "").strip()
+
+def _creative_values(creative: Dict) -> List[str]:
+    """从一个 creative 里取出值（取值位置随字段类型而变，两处都扫一遍）。"""
+    ui = creative.get("uiElement") or {}
+    if not isinstance(ui, dict):
+        return []
+    out = [_node_text(node) for node in (ui.get("textLinks") or [])]
+    for res in creative.get("resources") or []:
+        if isinstance(res, dict):
+            out.append(_node_title(res.get("uiElement")))
+    return [v for v in out if v]
+
+def parse_song_wiki(payload: Dict, release: Optional[Dict] = None) -> Dict:
+    """把百科区块页响应解析成「音乐百科」面板要显示的行（**纯函数，不联网**）。
+
+    ``release`` 是 :func:`song_release` 的结果，用来补上接口里没有的
+    「发行时间 / 发行版本」。返回 ``{"rows": [{"label", "value"}, …]}``；
+    一行都凑不出来时返回 ``{}``，由界面显示空态。
+    """
+    values: Dict[str, List[str]] = {}
+    labels: Dict[str, str] = {}
+
+    blocks = ((payload or {}).get("data") or {}).get("blocks") or []
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("code") != WIKI_BASIC_BLOCK:
+            continue
+        for creative in block.get("creatives") or []:
+            if not isinstance(creative, dict):
+                continue
+            key = str(creative.get("creativeType") or "").strip()
+            if not key:
+                continue
+            label = _node_title(creative.get("uiElement"))
+            if label and key not in labels:
+                labels[key] = label
+            found = _creative_values(creative)
+            if found:
+                values.setdefault(key, []).extend(found)
+
+    release = release or {}
+    if str(release.get("publish_text") or "").strip():
+        values["release_time"] = [str(release["publish_text"]).strip()]
+    if str(release.get("version") or "").strip():
+        values["release_version"] = [str(release["version"]).strip()]
+
+    rows: List[Dict[str, str]] = []
+    for key, default_label in WIKI_FIELDS:
+        items = [str(v).strip() for v in (values.get(key) or []) if str(v).strip()]
+        if not items:
+            continue
+        if key == "songTag":
+            # ``二次元-歌声合成`` -> ``二次元·歌声合成``（只换层级那一横杠，
+            # 免得把名字里本来就有连字符的风格切坏）
+            items = [v.replace(GENRE_LEVEL_SEPARATOR, GENRE_LEVEL_JOIN, 1) for v in items]
+            text = GENRE_JOIN.join(items)
+        else:
+            text = VALUE_JOIN.join(items)
+        rows.append({"label": labels.get(key) or default_label, "value": text})
+
+    return {"rows": rows} if rows else {}
+
+def pick_wiki_song(
+    songs: List[MusicInfo], name: str, interval: int = 0
+) -> Optional[MusicInfo]:
+    """在搜索结果里挑出「同一首歌」（核对不过返回 ``None``）。
+
+    别的音源没有网易云的歌曲 id，只能按名字找。同名翻唱满天飞，所以**两道关**
+    一起过：歌名对得上（:func:`same_title`）+ 时长在
+    :data:`~app.sources.base.DURATION_TOLERANCE` 秒以内。完全同名的优先于
+    「名字互相包含」的（「晴天」不该匹配到「晴天（深情版）」，除非只有它）。
+
+    拿不到时长（本地文件没解析出标签就是这种）时不认「包含」关系 ——
+    否则「不存在的歌」会匹配到搜索结果里那个碰巧包含这几个字的名字。
+    """
+    name = str(name or "").strip()
+    if not songs or not name:
+        return None
+
+    def _flat(text) -> str:
+        return "".join(str(text or "").split()).lower()
+
+    wanted = _flat(name)
+    has_duration = int(interval or 0) > 0
+    exact: List[MusicInfo] = []
+    loose: List[MusicInfo] = []
+    for mi in songs:
+        if mi is None or not same_title(mi.name, name):
+            continue
+        is_exact = _flat(mi.name) == wanted
+        if not is_exact and not has_duration:
+            continue
+        if not duration_matches(mi, int(interval or 0)):
+            continue
+        (exact if is_exact else loose).append(mi)
+
+    picked = exact or loose
+    return picked[0] if picked else None
+
+def song_release(album_id: str = "", album_name: str = "", artist: str = "") -> Dict:
+    """发行信息：发行时间与发行版本（供歌曲百科补「百科接口没有」的两行）。
+
+    官方客户端那两行不是百科数据，而是专辑的 ``publishTime`` 与 ``subType``
+    —— 实测（2026-09-19）「塔与少女的无题诗」所在的专辑 αrtist5 正好是
+    2018-11-30 / 录音室版，与客户端显示一致。专辑里没有 ``subType`` 时退回
+    专辑类型（专辑 / 单曲）。
+
+    **id 要拿名字核对**（与 :class:`~app.bridges.album.AlbumController` 同一套
+    判断）：网易云曲目自带的 ``album_id`` 可以直用，别的平台的编号拿去查可能
+    撞出一张风马牛不相及的专辑 —— 那会把发行时间安到一首无关的歌上。
+    """
+    album_id = str(album_id or "").strip()
+    album_name = str(album_name or "").strip()
+
+    page = album_page(album_id, "", artist) if album_id else {}
+    if not page or (album_name and not same_title(page.get("name"), album_name)):
+        page = album_page("", album_name, artist)
+
+    if not page:
+        return {}
+    return {
+        "publish_text": str(page.get("publish_text") or ""),
+        "version": str(page.get("version") or page.get("type_text") or ""),
+    }
+
+def song_wiki(
+    song_id: str = "",
+    *,
+    name: str = "",
+    singer: str = "",
+    album_name: str = "",
+    album_id: str = "",
+    interval: int = 0,
+) -> Dict:
+    """歌曲百科：「百科」标签页要显示的全部内容。
+
+    ``wy`` 曲目直接给 :attr:`Track.songmid`；其它音源（QQ / 酷我 / 酷狗 / 咪咕 /
+    本地文件）没有网易云的歌曲 id，就按「歌名 + 歌手」搜一次再核对（与歌手页 /
+    专辑页同一套「按名字定位」思路），核对不过就当作这首歌没有百科。
+
+    返回 ``{"song_id", "rows"}``；查不到返回 ``{}``。结果按歌曲 id 缓存。
+    """
+    song_id = str(song_id or "").strip()
+    name = str(name or "").strip()
+
+    def _cached(key: str) -> Optional[Dict]:
+        with _WIKI_CACHE_LOCK:
+            hit = _WIKI_CACHE.get(key)
+        return dict(hit) if hit is not None else None
+
+    def _store(key: str, page: Dict) -> None:
+        with _WIKI_CACHE_LOCK:
+            if len(_WIKI_CACHE) >= _ARTIST_CACHE_LIMIT:
+                _WIKI_CACHE.clear()
+            _WIKI_CACHE[key] = dict(page)
+
+    if song_id:
+        hit = _cached(song_id)
+        if hit is not None:
+            return hit
+    else:
+        src = _wy()
+        if src is None or not name:
+            return {}
+        songs = _safe(lambda: src.search(f"{name} {singer}".strip(), 1, 10), []) or []
+        matched = pick_wiki_song(list(songs), name, interval)
+        if matched is None or not matched.songmid:
+            return {}
+        song_id = str(matched.songmid)
+        # 核对上的那首歌自带权威专辑信息，比拿名字再搜一遍专辑可靠
+        album_id = album_id or str(matched.album_id or "")
+        album_name = album_name or str(matched.album_name or "")
+        hit = _cached(song_id)
+        if hit is not None:
+            return hit
+
+    src = _wy()
+    if src is None:
+        return {}
+    payload = _safe(
+        lambda: src._eapi_post(WIKI_ENDPOINT, {"songId": song_id}),  # noqa: SLF001
+        {},
+    ) or {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    page = parse_song_wiki(payload, song_release(album_id, album_name, singer))
+    page["song_id"] = song_id
+    # 请求真的得到回答就缓存，哪怕这首歌确实没有百科 —— 否则每次切回标签页
+    # 都要再问一遍。失败响应（只有 code / message，没有 data）不缓存，下次还有机会。
+    if isinstance(payload, dict) and payload.get("data") is not None:
+        _store(song_id, page)
     return page
 
 def _format_date(ms: int) -> str:
