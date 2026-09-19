@@ -12,13 +12,35 @@ import "../components"
 */
 Item {
     id: control
+    objectName: "nowPlayingPanel"
 
     property bool showLyrics: true
 
     // 封面尺寸按可用高度推导（固定值，避免 ColumnLayout 内的循环依赖）
     readonly property int coverSize: Math.max(180, Math.min(320, control.height * 0.34))
 
+    // 歌词文字对齐：默认居中，可在「设置 → 歌词 → 对齐方式」改为靠左 / 靠右
+    readonly property int lyricAlign: {
+        switch (settings.lyricAlignment) {
+        case "left": return Text.AlignLeft
+        case "right": return Text.AlignRight
+        default: return Text.AlignHCenter
+        }
+    }
+
     signal collapseRequested
+
+    // ── 事件遮罩 ────────────────────────────────────────
+    // 面板根节点只是个普通 Item：空白处不处理鼠标事件，事件会继续往下找
+    // 能接收的项，于是会穿透到底下的导航栏 / 页面 / 播放栏（展开态能点到
+    // 导航项）。用它兜住空白区域的事件，并顺手吃掉滚轮，避免滚动穿透。
+    // 必须声明在其它子项之前，可交互控件才仍然优先拿到事件。
+    MouseArea {
+        objectName: "nowPlayingBlocker"
+        anchors.fill: parent
+        acceptedButtons: Qt.AllButtons
+        onWheel: function (wheel) { wheel.accepted = true }
+    }
 
     // ── 背景：品牌色柔和渐变 ────────────────────────────
     Rectangle {
@@ -69,6 +91,7 @@ Item {
         }
 
         FluIconButton {
+            objectName: "nowPlayingCollapseButton"
             Layout.preferredWidth: 34
             Layout.preferredHeight: 34
             Layout.alignment: Qt.AlignVCenter
@@ -94,9 +117,17 @@ Item {
         }
         spacing: 36
 
+        // 歌词隐藏时用它两侧的弹性空白把封面区推到水平正中
+        // （不可见的项不参与布局，所以歌词显示时这两个占位等于不存在）
+        Item {
+            Layout.fillWidth: true
+            visible: !control.showLyrics
+        }
+
         // 左：封面与信息
         ColumnLayout {
             id: leftColumn
+            objectName: "nowPlayingCoverColumn"
             Layout.preferredWidth: control.coverSize
             Layout.minimumWidth: 180
             Layout.maximumWidth: 330
@@ -184,6 +215,11 @@ Item {
             Item { Layout.fillHeight: true }
         }
 
+        Item {
+            Layout.fillWidth: true
+            visible: !control.showLyrics
+        }
+
         // 右：歌词
         Rectangle {
             Layout.fillWidth: true
@@ -198,11 +234,13 @@ Item {
 
             ListView {
                 id: lyricView
+                objectName: "lyricView"
                 anchors.fill: parent
                 anchors.topMargin: 90
                 anchors.bottomMargin: 90
-                anchors.leftMargin: 24
-                anchors.rightMargin: 12
+                // 左右留白取一样宽，居中排版才不会整体偏右
+                anchors.leftMargin: 20
+                anchors.rightMargin: 20
                 clip: true
                 spacing: 6
                 model: player.lyricLines
@@ -238,7 +276,7 @@ Item {
                         color: lyricRow.active
                             ? Theme.accent
                             : (lyricRow.index < player.lyricIndex ? Theme.textTertiary : Theme.textSecondary)
-                        horizontalAlignment: Text.AlignLeft
+                        horizontalAlignment: control.lyricAlign
                         wrapMode: Text.WordWrap
                         elide: Text.ElideRight
                         maximumLineCount: 2
@@ -259,6 +297,7 @@ Item {
                         text: lyricRow.modelData.sub
                         font.pixelSize: 12
                         color: Theme.textTertiary
+                        horizontalAlignment: control.lyricAlign
                         wrapMode: Text.WordWrap
                         elide: Text.ElideRight
                         maximumLineCount: 2

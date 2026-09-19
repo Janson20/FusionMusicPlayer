@@ -13,6 +13,17 @@ Item {
 
     signal closeRequested
 
+    // ── 事件遮罩 ────────────────────────────────────────
+    // 和展开播放页同一个坑：普通 Item 的空白处不处理鼠标事件，点击会穿到
+    // 底下的导航栏 / 页面（点名「返回发现页」旁边的空白会直接切页）。
+    // 必须声明在其它子项之前，可交互控件才仍然优先拿到事件。
+    MouseArea {
+        objectName: "playlistDetailBlocker"
+        anchors.fill: parent
+        acceptedButtons: Qt.AllButtons
+        onWheel: function (wheel) { wheel.accepted = true }
+    }
+
     Rectangle {
         anchors.fill: parent
         color: Theme.windowBg

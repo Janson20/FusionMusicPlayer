@@ -471,6 +471,49 @@ FluWindow {
                         onToggled: function (value) { settings.setBool("lyrics.show_romaji", value) }
                     }
 
+                    SectionHeader { Layout.fillWidth: true; title: "对齐方式" }
+                    RowLayout {
+                        spacing: 10
+                        Repeater {
+                            model: settings.lyricAlignOptions
+                            delegate: Rectangle {
+                                required property var modelData
+                                Layout.preferredWidth: 92
+                                Layout.preferredHeight: 34
+                                radius: Theme.radiusSmall
+                                color: settings.lyricAlignment === modelData.id
+                                    ? Theme.accentSoft
+                                    : Theme.cardBg
+                                border.width: settings.lyricAlignment === modelData.id ? 2 : 1
+                                border.color: settings.lyricAlignment === modelData.id
+                                    ? Theme.accent
+                                    : Theme.border
+
+                                FluText {
+                                    anchors.centerIn: parent
+                                    text: modelData.name
+                                    font.pixelSize: 12
+                                    color: settings.lyricAlignment === modelData.id
+                                        ? Theme.accent
+                                        : Theme.textSecondary
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: settings.set("lyrics.alignment", modelData.id)
+                                }
+                            }
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
+                    FluText {
+                        Layout.fillWidth: true
+                        text: "展开播放页的歌词默认居中显示，这里可以改成靠左或靠右。"
+                        font.pixelSize: 11
+                        color: Theme.textTertiary
+                        wrapMode: Text.WordWrap
+                    }
+
                     SectionHeader { Layout.fillWidth: true; title: "字号" }
                     RowLayout {
                         spacing: 12

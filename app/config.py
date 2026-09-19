@@ -65,6 +65,7 @@ DEFAULTS: Dict[str, Any] = {
         "show_translation": True,
         "show_romaji": False,
         "font_size": 17,
+        "alignment": "center",      # left | center | right
         "desktop_lyric": False,
         "desktop_lyric_locked": False,
     },

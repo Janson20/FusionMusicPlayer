@@ -39,6 +39,15 @@ ACCENT_PRESETS = [
     {"id": "#EC4899", "name": "绯樱"},
 ]
 
+LYRIC_ALIGN_OPTIONS = [
+    {"id": "left", "name": "靠左"},
+    {"id": "center", "name": "居中"},
+    {"id": "right", "name": "靠右"},
+]
+
+# 歌词对齐的合法取值，非法值一律回落到居中
+LYRIC_ALIGNMENTS = ("left", "center", "right")
+
 class SettingsController(QObject):
     changed = Signal()
     cacheChanged = Signal()
@@ -141,6 +150,15 @@ class SettingsController(QObject):
     @Property(int, notify=changed)
     def lyricFontSize(self) -> int:  # noqa: N802
         return int(self._config.get("lyrics.font_size", 17) or 17)
+
+    @Property(str, notify=changed)
+    def lyricAlignment(self) -> str:  # noqa: N802
+        value = str(self._config.get("lyrics.alignment", "center") or "").strip().lower()
+        return value if value in LYRIC_ALIGNMENTS else "center"
+
+    @Property("QVariantList", constant=True)
+    def lyricAlignOptions(self):  # noqa: N802
+        return LYRIC_ALIGN_OPTIONS
 
     @Property(bool, notify=changed)
     def desktopLyric(self) -> bool:  # noqa: N802
