@@ -143,12 +143,22 @@ jobs:
           VERSION="${{ github.ref_name }}"
           VERSION="${VERSION#v}"
           PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-
-          if [ -z "$PREV_TAG" ]; then
-            COMMITS=$(git log --pretty=format:"- %s" --reverse)
-          else
-            COMMITS=$(git log "${PREV_TAG}..HEAD" --pretty=format:"- %s" --reverse)
+          RANGE=""
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="${PREV_TAG}..HEAD"
           fi
+
+          # 提交信息里会带 BOM / 零宽字符（编辑器另存、网页端提交都会带）。不清理的话
+          # "^- feat" 这类锚定匹配会整条失配：真正的改动全掉进「其它改动」，而「改进」
+          # 里只剩一条 chore —— 看起来就像这两个板块的内容写反了。
+          COMMITS=$(git log $RANGE --reverse --pretty=format:"%s" \
+            | tr -d '\357\273\277\342\200\213\342\200\214\342\200\215' \
+            | sed -E 's/^[[:space:]]*/- /')
+
+          # 约定式提交：type(scope)!: 描述。type 后必须跟冒号才算数，免得
+          # "- performance ..." 这种被误判成 perf；没写 type 的（"- 修了xx"、
+          # "- Merge branch ..."）一律进「其它改动」。
+          CC='(\([^)]*\))?!?:'
 
           {
             echo "## 🚀 Fusion Music Player ${VERSION}"
@@ -157,28 +167,30 @@ jobs:
             echo "用 PySide6 + FluentUI QML 重构的独立桌面播放器。"
             echo ""
 
-            FEATURES=$(echo "$COMMITS" | grep -iE "^- (feat|feature)" || true)
+            FEATURES=$(echo "$COMMITS" | grep -iE "^- (feat|feature)${CC}" || true)
             if [ -n "$FEATURES" ]; then
               echo "### ✨ 新功能"
               echo "$FEATURES" | sed -E 's/^- feat(\([^)]*\))?: /- /; s/^- feature(\([^)]*\))?: /- /'
               echo ""
             fi
 
-            FIXES=$(echo "$COMMITS" | grep -iE "^- (fix|bugfix)" || true)
+            FIXES=$(echo "$COMMITS" | grep -iE "^- (fix|bugfix)${CC}" || true)
             if [ -n "$FIXES" ]; then
               echo "### 🐛 修复"
               echo "$FIXES" | sed -E 's/^- fix(\([^)]*\))?: /- /; s/^- bugfix(\([^)]*\))?: /- /'
               echo ""
             fi
 
-            IMPROVEMENTS=$(echo "$COMMITS" | grep -iE "^- (refactor|perf|docs|style|test|build|ci|chore)" || true)
+            # 「改进」只收真正改善工程/产品的提交；chore（版本号提交、杂事）归
+            # 「其它改动」，否则每次发版「改进」里都只有一条 chore: release vX.Y.Z。
+            IMPROVEMENTS=$(echo "$COMMITS" | grep -iE "^- (refactor|perf|docs|style|test|build|ci)${CC}" || true)
             if [ -n "$IMPROVEMENTS" ]; then
               echo "### 💡 改进"
               echo "$IMPROVEMENTS"
               echo ""
             fi
 
-            OTHER=$(echo "$COMMITS" | grep -ivE "^- (feat|feature|fix|bugfix|refactor|perf|docs|style|test|build|ci|chore)" || true)
+            OTHER=$(echo "$COMMITS" | grep -ivE "^- (feat|feature|fix|bugfix|refactor|perf|docs|style|test|build|ci)${CC}" || true)
             if [ -n "$OTHER" ]; then
               echo "### 📝 其它改动"
               echo "$OTHER"
