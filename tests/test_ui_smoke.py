@@ -519,6 +519,16 @@ class UiProbe(Application):
 
         album_links = self.find_items("trackRowAlbumLink", row)
         check("曲目行里的专辑名可以点", len(album_links) > 0, f"{len(album_links)} 个")
+        # 专辑名前面那个「 · 」必须是**独立**的一项，不能拼进专辑名里
+        # （拼进去的话悬停时下划线会把它一起划上，和歌手名之间那个斜杠一个毛病）
+        for link in album_links:
+            check("专辑名里不带分隔符",
+                  "·" not in str(link.property("text")),
+                  repr(link.property("text")))
+        if album_links:
+            check("专辑名前面有独立的分隔符",
+                  len(self.find_items("trackRowAlbumSep", row)) == 1,
+                  f"{len(self.find_items('trackRowAlbumSep', row))} 个")
         playing_before = self.current_track()
         if album_links:
             self.click_item(album_links[0])
@@ -546,6 +556,12 @@ class UiProbe(Application):
         bar_album = self.item("playerBarAlbumLink")
         check("播放栏里的专辑名可以点", bar_album is not None)
         if bar_album is not None:
+            # 和曲目行同一个毛病：分隔符不能拼进专辑名里
+            check("播放栏的专辑名里不带分隔符",
+                  "·" not in str(bar_album.property("text")),
+                  repr(bar_album.property("text")))
+            check("播放栏有独立的分隔符",
+                  self.item("playerBarAlbumSep") is not None)
             self.click_item(bar_album)
             check("点播放栏专辑名打开专辑页", self.album.opened)
             self.album.close()
@@ -580,7 +596,46 @@ class UiProbe(Application):
         self.search.clear()
         self.pump(400)
 
+        self.step_overlay_stack()
         self.step_roam()
+
+    # ── 歌手页点专辑名：层级要按打开顺序 ────────────────────
+    def step_overlay_stack(self):
+        """从歌手页点专辑名，专辑页必须盖在歌手页**上面**。
+
+        两个覆盖层原先按 QML 声明顺序排（歌手页声明在后面，于是永远压着专辑页），
+        从歌手页点专辑名就打开了一个被盖住的页面 —— 看起来像「点了没反应」。
+        现在每次打开领一个递增的 ``layer``，界面拿它当 ``z``。
+        """
+        self.inject_artist_page()
+        self.pump(800)
+
+        artist_panel = self.window.findChild(QObject, "artistDetailPanel")
+        album_panel = self.window.findChild(QObject, "albumDetailPanel")
+        check("歌手页与专辑页都在", None not in (artist_panel, album_panel))
+        if None in (artist_panel, album_panel):
+            return
+
+        check("先打开的歌手页在最上面",
+              artist_panel.property("z") > album_panel.property("z"),
+              f"artist={artist_panel.property('z')} album={album_panel.property('z')}")
+
+        # 只找歌手页**里面**的专辑名：别的页面在它后面，行也还在可视树里
+        links = self.find_items("trackRowAlbumLink", artist_panel)
+        check("歌手页里点得到专辑名", len(links) > 0, f"{len(links)} 个")
+        if links:
+            self.click_item(links[0])
+            self.pump(700)
+            check("从歌手页点专辑名能打开专辑页", self.album.opened)
+            check("专辑页盖在歌手页上面",
+                  album_panel.property("z") > artist_panel.property("z"),
+                  f"artist={artist_panel.property('z')} album={album_panel.property('z')}")
+            # 歌手页要留着：返回来才退得回去
+            check("歌手页仍然开着（返回能退回来）", self.artist.opened)
+
+        self.album.close()
+        self.artist.close()
+        self.pump(400)
 
     # ── 漫游 ────────────────────────────────────────────────
     def step_roam(self):
@@ -780,6 +835,29 @@ class UiProbe(Application):
         self.player._lyric_index = 1
         self.player.lyricChanged.emit()
         self.player.lyricIndexChanged.emit()
+
+    def inject_artist_page(self) -> None:
+        """给歌手页灌一条数据，并让它领到**真实的**层级号。
+
+        真接口要联网，这里直接填模型；``layer`` 必须走同一个计数器 —— 手写一个
+        大数字会让「谁后开谁在上面」这件事失去意义（第一版探针就是这么把自己
+        绕进去的）。
+        """
+        from app.bridges.detail import _layer_seq
+        from app.core.models import Track
+
+        self.artist._meta = {
+            "id": "33699297", "name": "WOVOP", "cover": "", "alias": [],
+            "brief_desc": "", "music_size": 1, "album_size": 1,
+            "mv_size": 0, "fans_size": 0,
+        }
+        self.artist._model.set_tracks([
+            Track(source="wy", songmid="smoke-artist-1", name="测试歌曲 A",
+                  singer="WOVOP", album="探针专辑", album_id="33699298", interval=215),
+        ])
+        self.artist._opened = True
+        self.artist._layer = next(_layer_seq)
+        self.artist.changed.emit()
 
     def inject_wiki_rows(self) -> None:
         """塞两行假的百科（真数据来自网易云的百科区块页，冒烟测试不联网）。

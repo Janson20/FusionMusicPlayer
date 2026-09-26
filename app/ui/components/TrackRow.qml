@@ -204,12 +204,26 @@ Rectangle {
                     }
                 }
 
+                // 歌手与专辑之间的「 · 」：同样要独立成项，不能拼进专辑名里
+                // （拼进去的话悬停时下划线会把它一起划上，看着像专辑名的一部分）
+                FluText {
+                    objectName: "trackRowAlbumSep"
+                    Layout.alignment: Qt.AlignVCenter
+                    Layout.leftMargin: 5
+                    Layout.rightMargin: 5
+                    visible: control.showAlbum && control.album !== ""
+                             && control.singer !== ""
+                    text: "·"
+                    font.pixelSize: 11
+                    color: Theme.textTertiary
+                }
+
                 FluText {
                     objectName: "trackRowAlbumLink"
                     Layout.alignment: Qt.AlignVCenter
                     Layout.maximumWidth: 240
                     visible: control.showAlbum && control.album !== ""
-                    text: (control.singer !== "" ? "  ·  " : "") + control.album
+                    text: control.album
                     font.pixelSize: 11
                     font.underline: albumMouse.containsMouse
                     color: albumMouse.containsMouse ? Theme.accent : Theme.textTertiary

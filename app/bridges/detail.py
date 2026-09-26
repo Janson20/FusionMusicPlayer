@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import itertools
 import logging
 import threading
 from typing import Dict
@@ -19,6 +20,11 @@ from PySide6.QtCore import QObject, Property, Signal, Slot
 from ..core.models import Track, TrackListModel
 
 logger = logging.getLogger(__name__)
+
+#: 覆盖层的「打开顺序」。专辑页与歌手页可以互相跳（专辑 → 歌手、歌手 → 专辑），
+#: 谁后开谁该在上面 —— 靠 QML 的声明顺序做不到（声明顺序是固定的），
+#: 所以每次打开领一个递增的号，界面拿它当 ``z`` 用。
+_layer_seq = itertools.count(1)
 
 class _Emitter(QObject):
     loaded = Signal(int, object)
@@ -44,8 +50,18 @@ class DetailPageController(QObject):
         self._opened = False
         self._loading = False
         self._seq = 0
+        self._layer = 0
 
     # ── 属性 ────────────────────────────────────────────────
+
+    @Property(int, notify=changed)
+    def layer(self) -> int:
+        """这个覆盖层的层级：每次打开领一个递增号，越大越靠上（界面当 ``z`` 用）。
+
+        没有它的话，从歌手页点专辑名会打开一个**被歌手页盖住**的专辑页 ——
+        按 QML 声明顺序排的话，歌手页永远压在专辑页上面。
+        """
+        return self._layer
 
     @Property(QObject, constant=True)
     def model(self):
@@ -105,6 +121,8 @@ class DetailPageController(QObject):
         self._loading = True
         self._meta = {"id": page_id, "name": name}
         self._model.clear()
+        # 每打开一次就领一个新的层级：后开的盖住先开的（专辑 ↔ 歌手互相跳时靠它）
+        self._layer = next(_layer_seq)
         self.changed.emit()
         self._start(seq, page_id, name)
 

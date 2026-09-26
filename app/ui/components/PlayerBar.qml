@@ -159,12 +159,25 @@ Rectangle {
                         }
                     }
 
+                    // 歌手与专辑之间的「 · 」独立成项：拼进专辑名里的话，悬停时
+                    // 下划线会把它一起划上，看着像专辑名的一部分
+                    FluText {
+                        objectName: "playerBarAlbumSep"
+                        Layout.alignment: Qt.AlignVCenter
+                        Layout.leftMargin: 5
+                        Layout.rightMargin: 5
+                        visible: player.album !== "" && player.artist !== ""
+                        text: "·"
+                        font.pixelSize: 11
+                        color: Theme.textTertiary
+                    }
+
                     FluText {
                         objectName: "playerBarAlbumLink"
                         Layout.fillWidth: true
                         Layout.alignment: Qt.AlignVCenter
                         visible: player.album !== ""
-                        text: (player.artist !== "" ? "  ·  " : "") + player.album
+                        text: player.album
                         font.pixelSize: 11
                         font.underline: barAlbumMouse.containsMouse
                         color: barAlbumMouse.containsMouse ? Theme.accent : Theme.textTertiary

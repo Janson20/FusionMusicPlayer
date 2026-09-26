@@ -198,8 +198,13 @@ FluWindow {
             }
 
             // 专辑详情覆盖层（点任意地方的专辑名打开）
+            //
+            // 层级用**打开顺序**而不是声明顺序：专辑页与歌手页可以互相跳，
+            // 谁后开谁在上面。声明顺序是固定的，只按它排的话，从歌手页点专辑名会
+            // 打开一个被歌手页盖住的专辑页（看不见，还以为没反应）。
             AlbumDetailPanel {
                 id: albumDetail
+                z: album.layer
                 width: parent.width
                 height: parent.height
                 visible: album.opened
@@ -210,11 +215,10 @@ FluWindow {
                 onCloseRequested: album.close()
             }
 
-            // 歌手详情覆盖层（点任意地方的歌手名打开）。
-            // 声明顺序即层级：它要压在歌单详情与专辑详情之上 —— 从专辑页点歌手名
-            // 进去时，歌手页必须盖在专辑页上，否则打开了个看不见的页面。
+            // 歌手详情覆盖层（点任意地方的歌手名打开）
             ArtistDetailPanel {
                 id: artistDetail
+                z: artist.layer
                 width: parent.width
                 height: parent.height
                 visible: artist.opened
@@ -299,9 +303,14 @@ FluWindow {
     Shortcut {
         sequence: "Escape"
         onActivated: {
-            if (app.expanded)
+            if (app.expanded) {
                 app.setExpanded(false)
-            else if (artist.opened)
+                return
+            }
+            // 关**最上面那层**：专辑与歌手可以互相跳，压在上面的是后开的那个
+            // （layer 更大）。照固定顺序关的话，Esc 会去关一个被盖住的页面，
+            // 界面上看起来就像没反应。
+            if (artist.opened && (!album.opened || artist.layer > album.layer))
                 artist.close()
             else if (album.opened)
                 album.close()
