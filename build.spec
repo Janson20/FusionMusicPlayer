@@ -100,6 +100,10 @@ DROP_QT_DLLS = {
     # 注意：本地音乐页的系统文件夹选择器走 QtQuick.Dialogs（QML 里 import 的，
     # Python 侧看不见），所以 Qt6QuickDialogs2*.dll 与 qml/QtQuick/Dialogs/ 都得留着。
     # 它们本来就不在上面的名单里，别为了瘦身手滑加进来。
+    #
+    # 同理：托盘图标走 Qt.labs.platform（同样是 QML 里 import 的），
+    # Qt6LabsPlatform.dll 与 qml/Qt/labs/platform/ 一个都不能少 ——
+    # 少了的话界面直接加载不出来（import 失败会让整个 Main.qml 挂掉）。
 }
 
 # Pillow 只用来给 qrcode 渲染 PNG，其它解码器都可以去掉

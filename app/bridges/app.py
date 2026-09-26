@@ -54,6 +54,50 @@ PAGES: List[Dict[str, str]] = [
     {"id": "queue", "name": "播放队列", "icon": "List", "desc": "当前播放列表"},
 ]
 
+# ── 关闭主窗口的行为 ────────────────────────────────────────
+#: 「关闭主窗口时」的选项。设置页的下拉、询问框的「记住我的选择」与
+#: :func:`close_decision` 共用这一份，不会各写各的。
+CLOSE_ACTION_OPTIONS: List[Dict[str, str]] = [
+    {"id": "ask", "name": "每次询问"},
+    {"id": "tray", "name": "最小化到托盘"},
+    {"id": "quit", "name": "直接退出"},
+]
+CLOSE_ACTIONS: Tuple[str, ...] = tuple(option["id"] for option in CLOSE_ACTION_OPTIONS)
+
+
+def close_decision(action: str, tray_usable: bool) -> str:
+    """点了 ✕ 之后到底该怎么办：``"tray" | "ask" | "quit"``。
+
+    托盘用不了时（系统不支持，或者用户把托盘图标关了）**一律直接退出** ——
+    没有托盘还把窗口藏起来的话，用户就再也找不回这个程序了。
+    抽成纯函数是为了能离线回归：这种 bug 在界面上很难发现（点了 ✕ 窗口还在，
+    看着像「卡住了」）。
+    """
+    if not tray_usable:
+        return "quit"
+    value = str(action or "").strip().lower()
+    if value == "tray":
+        return "tray"
+    if value == "quit":
+        return "quit"
+    return "ask"
+
+
+def _system_tray_available() -> bool:
+    """系统有没有可用的通知区域（托盘）。
+
+    查询走 QtWidgets 的 ``QSystemTrayIcon``（静态方法，不需要 QApplication）；
+    界面那边用的是 ``Qt.labs.platform`` 的 ``SystemTrayIcon``，两者问的是同一个
+    平台接口，结论一致。QtWidgets 缺失时按「没有托盘」处理：这时只能直接退出。
+    """
+    try:
+        from PySide6.QtWidgets import QSystemTrayIcon
+
+        return bool(QSystemTrayIcon.isSystemTrayAvailable())
+    except Exception as e:  # pragma: no cover - 依赖运行环境
+        logger.debug("查询系统托盘失败: %s", e)
+        return False
+
 
 class AppController(QObject):
     pageChanged = Signal()
@@ -64,6 +108,8 @@ class AppController(QObject):
     loginRequested = Signal()
     settingsRequested = Signal()
     systemDarkChanged = Signal()
+    trayChanged = Signal()
+    closeActionChanged = Signal()
 
     def __init__(self, config, parent=None):
         super().__init__(parent)
@@ -71,6 +117,9 @@ class AppController(QObject):
         self._page = "discover"
         self._expanded = bool(config.get("window.player_expanded", False))
         self._queue_panel = bool(config.get("window.queue_visible", False))
+        # 托盘有没有：只问一次。平台集成给的这个答案在一个会话里是稳定的，
+        # 界面按它决定要不要给托盘相关的选项（见 close_decision）。
+        self._tray_available = _system_tray_available()
 
         # 跟随系统深浅色：FluThemeType 没有 Auto，需要我们自己读取系统配色
         try:
@@ -135,6 +184,77 @@ class AppController(QObject):
         self._queue_panel = not self._queue_panel
         self._config.set("window.queue_visible", self._queue_panel)
         self.queuePanelChanged.emit()
+
+    # ── 系统托盘 ────────────────────────────────────────────
+
+    @Property(bool, notify=trayChanged)
+    def trayAvailable(self) -> bool:  # noqa: N802
+        """系统有没有托盘。没有的话托盘相关的选项一律不该出现。"""
+        return self._tray_available
+
+    @Property(bool, notify=trayChanged)
+    def trayEnabled(self) -> bool:  # noqa: N802
+        """用户有没有要托盘图标常驻。"""
+        return bool(self._config.get("window.tray_icon", True))
+
+    @Slot(bool)
+    def setTrayEnabled(self, value: bool) -> None:  # noqa: N802
+        self._config.set("window.tray_icon", bool(value))
+        self.trayChanged.emit()
+
+    @Property(bool, notify=trayChanged)
+    def trayUsable(self) -> bool:  # noqa: N802
+        """托盘真的能用吗：系统支持 **且** 用户没关掉。"""
+        return self._tray_available and self.trayEnabled
+
+    @Property(str, constant=True)
+    def trayIconSource(self) -> str:  # noqa: N802
+        """托盘图标地址。优先 .ico —— Windows 会按 DPI 从里面挑合适的那一档。"""
+        assets = paths.program_dir() / "assets"
+        for name in ("icon.ico", "icon.png"):
+            candidate = assets / name
+            if candidate.exists():
+                return paths.resource(str(candidate))
+        return ""
+
+    # ── 关闭主窗口的行为 ────────────────────────────────────
+
+    @Property(str, notify=closeActionChanged)
+    def closeAction(self) -> str:  # noqa: N802
+        value = str(self._config.get("window.close_action", "ask") or "").strip().lower()
+        return value if value in CLOSE_ACTIONS else "ask"
+
+    @Slot(str)
+    def setCloseAction(self, action: str) -> None:  # noqa: N802
+        value = str(action or "").strip().lower()
+        if value not in CLOSE_ACTIONS:
+            value = "ask"
+        self._config.set("window.close_action", value)
+        self.closeActionChanged.emit()
+
+    @Property("QVariantList", constant=True)
+    def closeActionOptions(self):  # noqa: N802
+        return [dict(option) for option in CLOSE_ACTION_OPTIONS]
+
+    @Slot(result=str)
+    def closeDecision(self) -> str:  # noqa: N802
+        """关闭主窗口时该走哪条路，给界面直接调（逻辑见 :func:`close_decision`）。"""
+        return close_decision(self.closeAction, self.trayUsable)
+
+    @Slot()
+    def quitApplication(self) -> None:  # noqa: N802
+        """真的退出程序（托盘菜单的「退出」与询问框的「退出程序」都走这里）。
+
+        **不能用 QML 的 ``Qt.quit()``**（等价于 ``QCoreApplication::quit()``）：
+        托盘图标只要露过面，这个调用就会被吞掉 —— 实测（Qt 6.11 / Windows）
+        窗口藏进托盘之后点「退出程序」什么都不会发生，用户再点一次 ✕ 又弹一遍
+        询问框，看起来就是死循环。Qt 有意把「有托盘的程序」留活（托盘的意义就是
+        窗口关了程序还在），``quit()`` 尊重这层拦截。
+        ``exit(0)`` 是 ``quit()`` 文档里写的等价物，只是不受它影响；``aboutToQuit``
+        照样会发，所以 :meth:`Application.shutdown` 里的存档一步都不会少。
+        """
+        logger.info("正在退出程序…")
+        QGuiApplication.exit(0)
 
     # ── 通知 ────────────────────────────────────────────────
 

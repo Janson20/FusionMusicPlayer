@@ -551,6 +551,120 @@ def test_queue_serialization():
 
 
 # ──────────────────────────────────────────────────────────────
+# 播放会话（启动时恢复上次的队列与在播曲目）
+# ──────────────────────────────────────────────────────────────
+
+
+def test_session_roundtrip():
+    from app.core import session as play_session
+
+    tmp = Path(tempfile.mkdtemp(prefix="fusion_session_"))
+    path = tmp / "session.json"
+
+    q = PlayQueue()
+    q.set_tracks(make_tracks(3), 1)
+    q.mode = PlayMode.SHUFFLE
+    assert play_session.save(q, 42_000, path=path) is True
+    assert path.exists()
+
+    again = play_session.load(path=path)
+    assert again is not None
+    assert [t.name for t in again.tracks] == ["T0", "T1", "T2"]
+    assert again.index == 1
+    assert again.mode == PlayMode.SHUFFLE
+    assert again.position_ms == 42_000
+    assert again.saved_at > 0
+
+    # 快照能直接喂回队列（PlayerEngine.restoreSession 就是这么用的）
+    q2 = PlayQueue()
+    q2.load_dict(again.queue_dict())
+    assert q2.size == 3 and q2.index == 1
+    assert q2.current().name == "T1"
+    assert q2.mode == PlayMode.SHUFFLE
+
+
+def test_session_survives_junk():
+    """会话文件是纯文本，手改坏了只能变成「没有会话」，不能把界面带崩。"""
+    from app.core import session as play_session
+
+    tmp = Path(tempfile.mkdtemp(prefix="fusion_session_"))
+    path = tmp / "session.json"
+
+    assert play_session.load(path=path) is None            # 文件根本不存在
+
+    path.write_text("{ 这不是 json", encoding="utf-8")
+    assert play_session.load(path=path) is None
+    assert not path.exists()                               # 已备份成 .corrupt
+
+    # 没有歌名 / 没有 id / 不是字典的条目一律丢掉；下标越界要夹回范围
+    path.write_text(
+        json.dumps(
+            {
+                "version": play_session.SCHEMA_VERSION,
+                "position_ms": -5,
+                "queue": {
+                    "mode": "不认识的名字",
+                    "index": 99,
+                    "tracks": [
+                        {"source": "wy", "songmid": "1", "name": "好歌"},
+                        {"source": "wy", "songmid": "", "name": "没 id"},
+                        {"source": "wy", "songmid": "2", "name": ""},
+                        "根本不是字典",
+                    ],
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    sess = play_session.load(path=path)
+    assert sess is not None
+    assert [t.name for t in sess.tracks] == ["好歌"]
+    assert sess.index == 0                                 # 夹回唯一那首
+    assert sess.position_ms == 0                           # 负数抹平
+    assert sess.mode == PlayMode.LOOP_LIST                 # 不认识的名字回落
+
+    # 本地曲目没有 songmid，靠路径站着；空壳条目才该被丢
+    path.write_text(
+        json.dumps(
+            {
+                "version": play_session.SCHEMA_VERSION,
+                "queue": {"tracks": [{"source": "local", "name": "本地歌", "path": "D:/a.mp3"}]},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    sess = play_session.load(path=path)
+    assert sess is not None and sess.tracks[0].is_local
+
+    # 版本不认识：宁可当作没有会话，也不拿半个队列去猜
+    path.write_text(
+        json.dumps({"version": 999, "queue": {"tracks": [{"name": "A", "songmid": "1"}]}}),
+        encoding="utf-8",
+    )
+    assert play_session.load(path=path) is None
+
+
+def test_session_cleared_with_empty_queue():
+    """清空队列后退出，不能把上一次的队列又捞回来。"""
+    from app.core import session as play_session
+
+    tmp = Path(tempfile.mkdtemp(prefix="fusion_session_"))
+    path = tmp / "session.json"
+
+    q = PlayQueue()
+    q.set_tracks(make_tracks(2), 0)
+    assert play_session.save(q, 8000, path=path) is True
+    assert path.exists()
+
+    q.clear()
+    assert play_session.save(q, 0, path=path) is True
+    assert not path.exists()
+    assert play_session.load(path=path) is None
+
+
+# ──────────────────────────────────────────────────────────────
 # 曲目模型
 # ──────────────────────────────────────────────────────────────
 
@@ -620,6 +734,31 @@ def test_vip_flags_from_type():
 
     # 文档记载的标量 20 也是 SVIP
     assert vip_flags_from_type(20) == (True, True, False)
+
+
+def test_vip_level_suffix():
+    """等级显示成「黑胶SVIP·肆」，不是「黑胶SVIP Lv4」。"""
+    from app.core.account import vip_level_suffix
+
+    assert vip_level_suffix(4) == "·肆"
+    assert vip_level_suffix(1) == "·壹"
+    assert vip_level_suffix(9) == "·玖"
+    assert vip_level_suffix(10) == "·拾"          # 十不写「壹拾」
+    assert vip_level_suffix(11) == "·拾壹"
+    assert vip_level_suffix(20) == "·贰拾"
+    assert vip_level_suffix(35) == "·叁拾伍"
+    assert vip_level_suffix(99) == "·玖拾玖"
+    assert vip_level_suffix("4") == "·肆"          # 服务端偶尔给字符串
+
+    # 没等级就不显示后缀（0 与各种脏值都算）
+    assert vip_level_suffix(0) == ""
+    assert vip_level_suffix(None) == ""
+    assert vip_level_suffix("") == ""
+    assert vip_level_suffix("bad") == ""
+    assert vip_level_suffix(-3) == ""
+
+    # 超出中文数字范围：等级是服务端给的，不猜，原样退回阿拉伯数字
+    assert vip_level_suffix(100) == "·100"
 
 
 def test_credential_renew_window():
@@ -862,6 +1001,37 @@ def test_window_size_fits_screen():
 
     assert WINDOW_DEFAULT_W > WINDOW_FLOOR_W
     assert WINDOW_DEFAULT_H > WINDOW_FLOOR_H
+
+
+def test_close_decision():
+    """关闭主窗口：有托盘才谈得上「收进托盘」，没有就一律退出。
+
+    这里守的是最要命的一种错法：托盘用不了还把窗口藏起来 —— 用户点了 ✕，
+    窗口消失了，进程还在放歌，任务栏里却什么都没有，再也找不回来。
+    """
+    from app.bridges.app import CLOSE_ACTIONS, close_decision
+    from app.config import DEFAULTS
+
+    assert CLOSE_ACTIONS == ("ask", "tray", "quit")
+    # 默认「每次询问」，而且托盘图标默认开着
+    assert DEFAULTS["window"]["close_action"] == "ask"
+    assert DEFAULTS["window"]["tray_icon"] is True
+
+    # 有托盘：照设置走
+    assert close_decision("ask", True) == "ask"
+    assert close_decision("tray", True) == "tray"
+    assert close_decision("quit", True) == "quit"
+    # 大小写与空白不该改变结论
+    assert close_decision(" TRAY ", True) == "tray"
+    assert close_decision("Quit", True) == "quit"
+    # 设置里是脏值 / 空值：回到最保守的「每次询问」，而不是猜
+    assert close_decision("", True) == "ask"
+    assert close_decision(None, True) == "ask"
+    assert close_decision("bogus", True) == "ask"
+
+    # 没有托盘（系统不支持，或用户把托盘图标关了）：一律直接退出
+    for action in CLOSE_ACTIONS + ("bogus", "", None):
+        assert close_decision(action, False) == "quit"
 
 
 def test_local_match_rules():

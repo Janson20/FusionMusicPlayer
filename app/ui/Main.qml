@@ -2,6 +2,8 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Window
+// 带命名空间导入：QtQuick.Controls 里也有 Menu / MenuItem，不限定会撞名
+import Qt.labs.platform as Platform
 import FluentUI
 import "components"
 import "pages"
@@ -38,6 +40,9 @@ FluWindow {
     visible: true
     autoMaximize: app.restoreMaximized()
     windowIcon: ""
+
+    // 缩到托盘时提示过一次就不再提示（每次关闭都弹气泡很烦）
+    property bool trayHintShown: false
 
     // ── 标题栏（含草图里的「设置按钮」）──────────────────
     appBar: AppTitleBar {
@@ -260,15 +265,162 @@ FluWindow {
         }
     }
 
+    // ── 系统托盘 ────────────────────────────────────────
+    //
+    // 用 Qt.labs.platform 的 SystemTrayIcon，而不是 QtWidgets 的 QSystemTrayIcon：
+    // 后者的上下文菜单只吃 QMenu，而 QMenu 是 QWidget，得把整个程序从
+    // QGuiApplication 换成 QApplication。这里问的是同一套平台接口（available 与
+    // QSystemTrayIcon::isSystemTrayAvailable 结论一致），菜单还是系统原生菜单 ——
+    // 主窗口藏进托盘之后照样弹得出来（QML 自己的 Menu 是画在窗口里的，
+    // 窗口一藏就没地方画了）。
+    Platform.SystemTrayIcon {
+        id: tray
+        objectName: "trayIcon"
+        visible: app.trayUsable
+        icon.source: app.trayIconSource
+        tooltip: player.title !== ""
+            ? player.title + (player.artist !== "" ? " - " + player.artist : "")
+            : app.appName
+
+        onActivated: function (reason) {
+            // 左键单击 / 双击都回窗口；右键由系统弹 menu
+            if (reason === Platform.SystemTrayIcon.Trigger
+                    || reason === Platform.SystemTrayIcon.DoubleClick)
+                root.restoreFromTray()
+        }
+
+        menu: Platform.Menu {
+            objectName: "trayMenu"
+            Platform.MenuItem {
+                objectName: "trayMenuShow"
+                text: "显示主窗口"
+                onTriggered: root.restoreFromTray()
+            }
+            Platform.MenuSeparator { }
+            Platform.MenuItem {
+                objectName: "trayMenuToggle"
+                text: player.playing ? "暂停" : "播放"
+                enabled: player.title !== ""
+                onTriggered: player.toggle()
+            }
+            Platform.MenuItem {
+                objectName: "trayMenuPrev"
+                text: "上一首"
+                enabled: player.queueCount > 0
+                onTriggered: player.previous()
+            }
+            Platform.MenuItem {
+                objectName: "trayMenuNext"
+                text: "下一首"
+                enabled: player.queueCount > 0
+                onTriggered: player.next()
+            }
+            Platform.MenuSeparator { }
+            Platform.MenuItem {
+                objectName: "trayMenuQuit"
+                text: "退出"
+                onTriggered: root.quitApp()
+            }
+        }
+    }
+
     // ── 窗口状态持久化 ──────────────────────────────────
+    //
+    // 关闭窗口时存尺寸 / 最大化。**藏到托盘时不能存** —— 那一刻 visibility 是
+    // Hidden，存下去会把用户上次调好的尺寸覆盖掉（见 saveWindowState）。
     closeListener: function (event) {
+        root.handleClose(event)
+    }
+
+    // 关闭请求的唯一入口：标题栏的 ✕ / Alt+F4 走 closeListener，
+    // 询问框选完走 applyCloseChoice，两边都从这里分派。
+    // 返回真正执行的动作（tray / ask / quit），冒烟测试直接调它。
+    function handleClose(event) {
+        root.saveWindowState()
+        var action = app.closeDecision()
+        if (action === "tray") {
+            if (event)
+                event.accepted = false
+            root.hideToTray()
+            return action
+        }
+        if (action === "ask") {
+            if (event)
+                event.accepted = false
+            closeDialog.remember = false
+            closeDialog.open()
+            return action
+        }
+        // 直接退出。窗口还开着时 destoryOnClose() 也管用，但退出统一走 quitApp()：
+        // 两条路各用一套机制的话，「关窗退出」和「托盘退出」的可靠性会不一样
+        root.quitApp()
+        return action
+    }
+
+    function saveWindowState() {
         if (root.visibility === Window.Windowed || root.visibility === Window.Maximized) {
             if (root.visibility === Window.Windowed)
                 app.saveWindowSize(root.width, root.height)
             app.saveMaximized(root.visibility === Window.Maximized)
         }
         app.flush()
-        root.destoryOnClose()
+    }
+
+    // 最小化到托盘：窗口 hide() 掉（不是关掉），子窗口一起收走，
+    // 否则「主窗口进了托盘、设置窗口还杵在桌面上」很怪
+    function hideToTray() {
+        settingsWindow.hide()
+        loginWindow.hide()
+        root.hide()
+        if (!root.trayHintShown && tray.supportsMessages) {
+            root.trayHintShown = true
+            tray.showMessage(app.appName, "已最小化到托盘，播放不会中断",
+                             Platform.SystemTrayIcon.Information, 3000)
+        }
+    }
+
+    function restoreFromTray() {
+        if (!root.visible)
+            root.show()
+        if (root.visibility === Window.Minimized)
+            root.showNormal()
+        root.raise()
+        root.requestActivate()
+    }
+
+    // 退出程序：主窗口可能是藏着的，closeListener 不会跑，所以这里得自己把
+    // 窗口状态存一次。
+    //
+    // **不要用 Qt.quit()** —— 托盘图标露过面之后它就失效了（Qt 有意让有托盘的
+    // 程序不因窗口关闭而退出），点了「退出程序」会毫无反应，用户再点 ✕ 又弹一次
+    // 询问框，看着像死循环。走 Python 侧的 exit(0)（见 app.quitApplication）。
+    //
+    // 退出前**先把界面收掉**：拆引擎（媒体后端、整棵 QML 对象树、托盘图标）要花
+    // 一秒上下，窗口留在屏幕上就会显示成「未响应」（实测：留着窗口 2.6 秒才消失，
+    // 先收窗口则窗口当场不见、进程随后无声退出）。改动前那版是 destoryOnClose()，
+    // 窗口当场销毁，所以看着是「秒退」—— 这里补回同样的观感。
+    function quitApp() {
+        root.saveWindowState()
+        settingsWindow.hide()
+        loginWindow.hide()
+        root.hide()
+        tray.visible = false
+        app.quitApplication()
+    }
+
+    // 询问框里选了什么。勾了「记住我的选择」就把它写进设置（设置页里能改回来）
+    function applyCloseChoice(choice) {
+        if (closeDialog.remember)
+            app.setCloseAction(choice)
+        // 先让弹窗自己关掉，再动窗口：quit 时带着一个开着的 popup 拆引擎，
+        // 能不出事但没必要冒这个险
+        closeDialog.close()
+        Qt.callLater(function () {
+            if (choice === "tray")
+                root.hideToTray()
+            else
+                root.quitApp()
+        })
     }
 
     // ── 快捷键 ──────────────────────────────────────────
@@ -325,5 +477,42 @@ FluWindow {
 
     LoginWindow {
         id: loginWindow
+    }
+
+    // ── 关闭主窗口的询问框 ──────────────────────────────
+    FluContentDialog {
+        id: closeDialog
+        objectName: "closeDialog"
+        // 「记住我的选择」勾没勾（每次打开都会重置，见 closeListener）
+        property bool remember: false
+
+        title: "关闭 " + app.appName
+        message: "要让它在系统托盘里继续播放，还是退出程序？"
+        buttonFlags: FluContentDialogType.NeutralButton
+            | FluContentDialogType.NegativeButton
+            | FluContentDialogType.PositiveButton
+        neutralText: "最小化到托盘"
+        negativeText: "取消"
+        positiveText: "退出程序"
+
+        contentDelegate: Component {
+            Item {
+                implicitHeight: 42
+                FluCheckBox {
+                    objectName: "closeRememberBox"
+                    anchors.left: parent.left
+                    anchors.leftMargin: 20
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "记住我的选择（可在设置里改回来）"
+                    checked: closeDialog.remember
+                    clickListener: function () {
+                        closeDialog.remember = !closeDialog.remember
+                    }
+                }
+            }
+        }
+
+        onNeutralClicked: root.applyCloseChoice("tray")
+        onPositiveClicked: root.applyCloseChoice("quit")
     }
 }

@@ -97,6 +97,12 @@ class Application(QObject):
         self.library.load()
 
         self.player = PlayerEngine(self.config, self.library)
+        # 恢复上次的播放队列与在播曲目。**必须在 QML 加载之前**：界面是在建立
+        # 绑定的时候读一次属性值的，先把队列摆好，起来就是对的（见 restoreSession）。
+        try:
+            self.player.restoreSession()
+        except Exception as e:
+            logger.warning("恢复上次播放会话失败: %s", e)
         self.account = AccountManager(self.config)
         self.search = SearchController(self.config)
         self.library_bridge = LibraryController(self.config, self.library)

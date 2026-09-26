@@ -27,6 +27,7 @@ from PySide6.QtCore import (
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 
 from . import cache
+from . import session as play_session
 from .lyrics import Lyrics
 from .models import Track, format_duration
 from .queue import PlayMode, mode_from_name, PLAY_MODE_LABELS, PLAY_MODE_NAMES
@@ -38,6 +39,13 @@ logger = logging.getLogger(__name__)
 
 FADE_STEPS = 20
 FADE_INTERVAL_MS = 50
+
+#: 队列 / 曲目变化后隔多久把会话写盘（合并「播放全部」那种连着改好几次的操作）
+SESSION_SAVE_DELAY_MS = 1500
+#: 播放中每隔多久记一次进度。这只是掉电 / 被强杀的兜底：正常退出走
+#: shutdown()，进度是准的。间隔没敢定太短 —— 会话是**整份重写**的，
+#: 上千首的队列一次要写近 1MB / 上百毫秒，一分钟一次已经是能接受的上限。
+SESSION_PROGRESS_MS = 60000
 
 class _Emitter(QObject):
     """把工作线程的结果投递回主线程（Qt 会自动排队到接收者线程）。"""
@@ -86,6 +94,12 @@ class PlayerEngine(QObject):
         self._requested: Optional[Track] = None
         self._current_quality: str = "320k"
         self._fallback_source: str = ""
+        # 媒体真的交给 QMediaPlayer 了吗。会话恢复出来的曲目只是「摆在播放栏上」，
+        # 这时 _player 手上还没有任何 source，play() 不会出声（见 toggle()）
+        self._media_ready = False
+        # 会话恢复出来的进度，只对恢复的那一首生效（见 _take_resume_ms）
+        self._resume_ms = 0
+        self._resume_uid = ""
 
         self._playing = False
         self._paused = False
@@ -117,10 +131,19 @@ class PlayerEngine(QObject):
         self._progress_timer.setInterval(200)
         self._progress_timer.timeout.connect(self._poll_progress)
 
+        # 会话落盘：队列 / 曲目 / 播放模式一变就重新计时，静下来 1.5 秒才写一次
+        # （「播放全部」会连着改好几次队列，每次都写盘毫无意义）。
+        self._session_timer = QTimer(self)
+        self._session_timer.setSingleShot(True)
+        self._session_timer.setInterval(SESSION_SAVE_DELAY_MS)
+        self._session_timer.timeout.connect(self.saveSession)
+        self._session_ticks = 0
+
         self._player.positionChanged.connect(self._on_position)
         self._player.durationChanged.connect(self._on_duration)
         self._player.playbackStateChanged.connect(self._on_playback_state)
         self._player.mediaStatusChanged.connect(self._on_media_status)
+        self._player.seekableChanged.connect(self._on_seekable_changed)
         self._player.errorOccurred.connect(self._on_error)
 
         volume = int(config.get("playback.volume", 65) or 0)
@@ -308,7 +331,9 @@ class PlayerEngine(QObject):
 
     @Slot()
     def toggle(self) -> None:
-        if self._current is None:
+        if self._current is None or not self._media_ready:
+            # 恢复会话摆回来的曲目还没有媒体：这时 _player.play() 什么也不会发生，
+            # 得走一次正常的加载（它会把恢复的进度也一起带上）
             if self._queue.size:
                 self._load_current(record_history=True)
             else:
@@ -324,7 +349,7 @@ class PlayerEngine(QObject):
 
     @Slot()
     def play(self) -> None:
-        if self._current is None:
+        if self._current is None or not self._media_ready:
             if self._queue.size:
                 self._load_current(record_history=True)
             return
@@ -370,11 +395,18 @@ class PlayerEngine(QObject):
 
     @Slot(int)
     def seek(self, ms: int) -> None:
-        if not self._seekable:
-            self._pending_seek_ms = max(0, int(ms))
+        ms = max(0, int(ms))
+        if not self._seek_ready():
+            # 媒体还没就绪（比如刚恢复的会话）：这时 setPosition() 会被后端静默
+            # 丢掉，先记下来，等就绪了再跳（见 _apply_pending_seek）
+            self._pending_seek_ms = ms
+            # 用户自己拖过了，恢复出来的进度就此作废 —— 否则一按播放，
+            # 他刚拖到的位置会被「上次听到哪儿」顶掉
+            self._resume_uid = ""
+            self._resume_ms = 0
             return
-        self._player.setPosition(max(0, int(ms)))
-        self._position_ms = max(0, int(ms))
+        self._player.setPosition(ms)
+        self._position_ms = ms
         self.positionChanged.emit()
 
     @Slot(float)
@@ -507,10 +539,34 @@ class PlayerEngine(QObject):
     def _volume_ratio(self) -> float:
         return max(0.0, min(1.0, int(self._config.get("playback.volume", 65) or 0) / 100.0))
 
+    def _next_pending_seek(self, track: Track) -> Optional[int]:
+        """这次加载要从哪儿开始放。
+
+        * 换了歌：上一首没兑现的那次 seek 作废，改用会话恢复的进度（如果有）；
+        * 同一首歌重新加载（恢复会话后按播放、或加载中又点了一次播放）：
+          保留用户刚拖到的位置，没拖过就用恢复出来的进度。
+        """
+        same_song = self._current is not None and self._current.uid == track.uid
+        resume = self._take_resume_ms(track)
+        if same_song and self._pending_seek_ms is not None:
+            return self._pending_seek_ms
+        return resume if resume > 0 else None
+
+    def _take_resume_ms(self, track: Track) -> int:
+        """取出（并消费）会话恢复时记下的进度，只认恢复的那一首。"""
+        ms = self._resume_ms if (self._resume_uid and track.uid == self._resume_uid) else 0
+        self._resume_uid = ""
+        self._resume_ms = 0
+        return ms
+
     def _load_current(self, *, record_history: bool = False) -> None:
         track = self._queue.current()
         if track is None:
             return
+
+        # 先把「这次从哪儿开始放」定下来：_current 一旦换成新曲目，
+        # 就分不清「同一首歌重新加载」和「换了歌」了（见 _next_pending_seek）
+        pending_seek = self._next_pending_seek(track)
 
         self._seq += 1
         seq = self._seq
@@ -522,9 +578,10 @@ class PlayerEngine(QObject):
         self._requested = track
         self._current = track
         self._fallback_source = ""
+        self._media_ready = False
         self._duration_ms = int(track.interval or 0) * 1000
         self._position_ms = 0
-        self._pending_seek_ms = None
+        self._pending_seek_ms = pending_seek
         self._seekable = False
         self._lyrics.clear()
         self._lyric_index = -1
@@ -591,6 +648,7 @@ class PlayerEngine(QObject):
         self._player.play()
         self._fade_in()
         self._progress_timer.start()
+        self._media_ready = True
 
         self._loading = False
         self.loadingChanged.emit()
@@ -675,9 +733,35 @@ class PlayerEngine(QObject):
             if not self._seekable:
                 self._seekable = True
                 self.seekableChanged.emit()
-                if self._pending_seek_ms is not None:
-                    pos, self._pending_seek_ms = self._pending_seek_ms, None
-                    self._player.setPosition(pos)
+            self._apply_pending_seek()
+
+    def _apply_pending_seek(self) -> None:
+        """兑现「加载期间挂起的那次 seek」（恢复会话的进度也从这条路进场）。
+
+        必须等媒体真的就绪再跳：``setPosition()`` 在 ``LoadingMedia`` 阶段会被
+        后端**静默丢掉** —— 实测（ffmpeg 后端 + 本地 wav）连 ``durationChanged``
+        都已经发出来了，这一跳仍然不生效，播放还是从 0 开始，于是「上次听到
+        哪儿」永远回不去。所以就绪前只是记着，等状态回调再来一次。
+        """
+        if self._pending_seek_ms is None or not self._seek_ready():
+            return
+        pos, self._pending_seek_ms = max(0, int(self._pending_seek_ms)), None
+        self._player.setPosition(pos)
+        self._position_ms = pos
+        self.positionChanged.emit()
+
+    def _seek_ready(self) -> bool:
+        """媒体是否已经就绪到能跳转。"""
+        if self._player.mediaStatus() not in (
+            QMediaPlayer.LoadedMedia,
+            QMediaPlayer.BufferingMedia,
+            QMediaPlayer.BufferedMedia,
+        ):
+            return False
+        try:
+            return bool(self._player.isSeekable())
+        except Exception:  # 后端没实现这个查询时按「就绪即可」
+            return True
 
     def _on_playback_state(self, state) -> None:
         playing = state == QMediaPlayer.PlayingState
@@ -699,10 +783,21 @@ class PlayerEngine(QObject):
                     f"无法解码「{self._current.name}」，已跳过"
                 )
                 QTimer.singleShot(600, self._advance_auto)
-        elif status == QMediaPlayer.LoadedMedia:
+        elif status in (
+            QMediaPlayer.LoadedMedia,
+            QMediaPlayer.BufferingMedia,
+            QMediaPlayer.BufferedMedia,
+        ):
             if not self._seekable:
                 self._seekable = True
                 self.seekableChanged.emit()
+            # 就绪了：该兑现加载期间挂起的那次 seek 了
+            self._apply_pending_seek()
+
+    @Slot(bool)
+    def _on_seekable_changed(self, seekable: bool) -> None:
+        if seekable:
+            self._apply_pending_seek()
 
     def _on_error(self, error, message: str) -> None:
         if error == QMediaPlayer.NoError:
@@ -733,6 +828,12 @@ class PlayerEngine(QObject):
     def _poll_progress(self) -> None:
         if self._player.playbackState() == QMediaPlayer.StoppedState and not self._paused:
             self._progress_timer.stop()
+            return
+        # 播放中另外按间隔记一次进度：只靠退出时写盘的话，掉电 / 被强杀就全丢了
+        self._session_ticks += 1
+        if self._session_ticks * self._progress_timer.interval() >= SESSION_PROGRESS_MS:
+            self._session_ticks = 0
+            self.saveSession()
 
     # ── 内部：淡入淡出 ──────────────────────────────────────
 
@@ -779,11 +880,91 @@ class PlayerEngine(QObject):
 
     def _on_queue_changed(self) -> None:
         self.queueChanged.emit()
+        self._session_timer.start()
+
+    # ── 播放会话（退出时记下、下次启动摆回来）───────────────
+
+    @Slot()
+    def saveSession(self) -> None:  # noqa: N802
+        """把在播曲目 / 队列 / 播放模式 / 进度写进会话文件。"""
+        if not bool(self._config.get("playback.restore_session", True)):
+            # 关掉恢复功能就顺手把旧会话删掉：下次开才是真的「干净启动」，
+            # 而不是留个过期队列等用户哪天又打开这个开关时突然冒出来
+            play_session.clear()
+            return
+        play_session.save(self._queue, self._position_ms)
+
+    @Slot(result=bool)
+    def restoreSession(self) -> bool:  # noqa: N802
+        """把上次退出时的播放队列与在播曲目摆回来。
+
+        **不自动出声**：恢复的是状态，不是播放动作 —— 程序一启动就轰一嗓子，
+        比「少恢复一首歌」讨厌得多。按播放键即从上次的进度接着放。
+
+        要在 QML 加载**之前**调用（见 ``Application.__init__``）：QML 是在
+        建立绑定时读一次属性值的，先摆好状态，界面一起来就是对的。
+        """
+        if not bool(self._config.get("playback.restore_session", True)):
+            return False
+
+        saved = play_session.load()
+        if saved is None:
+            return False
+
+        self._queue.load_dict(saved.queue_dict())
+        track = self._queue.current()
+        if track is None:
+            return False
+
+        self._current = track
+        self._requested = track
+        self._fallback_source = ""
+        self._media_ready = False
+        self._duration_ms = int(track.interval or 0) * 1000
+        self._seekable = False
+        # 上一次没兑现的 seek 一并作废（正常情况下这里是启动时，本来就该是空的）
+        self._pending_seek_ms = None
+        self._resume_ms = self._clamp_resume(saved.position_ms)
+        self._resume_uid = track.uid if self._resume_ms > 0 else ""
+        self._position_ms = self._resume_ms
+
+        self.trackChanged.emit()
+        self.durationChanged.emit()
+        self.positionChanged.emit()
+        self.favoriteChanged.emit()
+        self.favoriteStateChanged.emit()
+        logger.info(
+            "已恢复上次的播放会话：%d 首，第 %d 首「%s」，进度 %.1f 秒",
+            self._queue.size,
+            self._queue.index + 1,
+            track.name,
+            self._resume_ms / 1000.0,
+        )
+        return True
+
+    def _clamp_resume(self, position_ms: int) -> int:
+        """上次的进度：关掉「记住进度」时一律从 0 开始。
+
+        贴着末尾退出（听到最后一秒就关机）的情况也要夹一下 —— 否则恢复出来
+        一按播放就立刻播完跳到下一首，看着像「这首被吞了」。
+        """
+        if not bool(self._config.get("playback.remember_progress", True)):
+            return 0
+        ms = max(0, int(position_ms or 0))
+        if ms <= 0:
+            return 0
+        if self._duration_ms > 0:
+            ms = min(ms, max(0, self._duration_ms - 1000))
+        return ms
 
     # ── 生命周期 ────────────────────────────────────────────
 
     @Slot()
     def shutdown(self) -> None:
+        # 先存会话再停播放器：stop() 可能把 position 归零，
+        # 那样「上次听到哪儿」存下来永远是 0:00
+        self._session_timer.stop()
+        self.saveSession()
         self._fade_timer.stop()
         self._progress_timer.stop()
         try:

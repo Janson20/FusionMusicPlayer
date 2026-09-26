@@ -30,12 +30,14 @@ DEFAULTS: Dict[str, Any] = {
     "playback": {
         "volume": 65,
         "muted": False,
-        "mode": "list_loop",        # order | single | list_loop | shuffle | heart
+        "mode": "loop_list",        # order | loop_list | loop_single | shuffle
         "quality": "320k",          # 128k | 320k | flac | flac24bit
         "auto_play_next": True,
         "fade_in_ms": 0,
         "remember_progress": True,
         "seek_step_ms": 5000,
+        # 启动时把上次退出时的播放队列与在播曲目摆回来（不自动播放）
+        "restore_session": True,
     },
     # ── 音源 ────────────────────────────────────────────────
     "sources": {
@@ -90,6 +92,10 @@ DEFAULTS: Dict[str, Any] = {
         "maximized": False,
         "player_expanded": False,
         "queue_visible": False,
+        # 系统托盘：图标是否常驻（系统没有托盘时这个开关没有意义）
+        "tray_icon": True,
+        # 关闭主窗口时：ask 每次询问 | tray 最小化到托盘 | quit 直接退出
+        "close_action": "ask",
     },
     # ── 高级 ────────────────────────────────────────────────
     "advanced": {

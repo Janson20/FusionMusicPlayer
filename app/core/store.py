@@ -76,9 +76,11 @@ def name_sort_key(title: str) -> str:
 
 # ──────────────────────────────────────────────────────────────
 # 通用 JSON 读写
+#
+# 公开给同包的 session.py 复用（播放会话走的是同一套「原子写入 + 损坏备份」）。
 # ──────────────────────────────────────────────────────────────
 
-def _atomic_write_json(path: Path, data: Any) -> None:
+def atomic_write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     try:
@@ -92,7 +94,8 @@ def _atomic_write_json(path: Path, data: Any) -> None:
             pass
         raise
 
-def _read_json(path: Path, default: Any) -> Any:
+def read_json(path: Path, default: Any) -> Any:
+    """读 JSON；缺文件返回 ``default``，解析失败把原文件挪成 ``*.corrupt``。"""
     if not path.exists():
         return default
     try:
@@ -191,7 +194,7 @@ class Library:
 
     def load(self) -> None:
         with self._lock:
-            raw = _read_json(self._playlists_path, {"version": SCHEMA_VERSION, "playlists": []})
+            raw = read_json(self._playlists_path, {"version": SCHEMA_VERSION, "playlists": []})
             self._playlists = [Playlist.from_dict(d) for d in (raw.get("playlists") or [])]
             # 自建歌单里也可能躺着未归一化的本地歌（迁移见 _migrate_singers）
             for playlist in self._playlists:
@@ -208,13 +211,13 @@ class Library:
                 )
 
             self._history = _migrate_singers(
-                Track.from_dict(d) for d in _read_json(self._history_path, [])
+                Track.from_dict(d) for d in read_json(self._history_path, [])
             )
             self._favorites = _migrate_singers(
-                Track.from_dict(d) for d in _read_json(self._favorites_path, [])
+                Track.from_dict(d) for d in read_json(self._favorites_path, [])
             )
             self._local = _migrate_singers(
-                Track.from_dict(d) for d in _read_json(self._local_path, [])
+                Track.from_dict(d) for d in read_json(self._local_path, [])
             )
 
             # 「我喜欢」与独立文件保持一致（以文件为准）
@@ -232,13 +235,13 @@ class Library:
 
     def save(self) -> None:
         with self._lock:
-            _atomic_write_json(
+            atomic_write_json(
                 self._playlists_path,
                 {"version": SCHEMA_VERSION, "playlists": [p.to_dict() for p in self._playlists]},
             )
-            _atomic_write_json(self._history_path, [t.to_dict() for t in self._history])
-            _atomic_write_json(self._favorites_path, [t.to_dict() for t in self._favorites])
-            _atomic_write_json(self._local_path, [t.to_dict() for t in self._local])
+            atomic_write_json(self._history_path, [t.to_dict() for t in self._history])
+            atomic_write_json(self._favorites_path, [t.to_dict() for t in self._favorites])
+            atomic_write_json(self._local_path, [t.to_dict() for t in self._local])
             self._dirty.clear()
 
     def save_if_dirty(self) -> None:

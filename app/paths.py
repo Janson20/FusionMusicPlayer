@@ -123,6 +123,11 @@ def favorites_file() -> Path:
     return data_dir() / "favorites.json"
 
 
+def session_file() -> Path:
+    """上次播放会话（在播曲目 + 队列 + 进度），见 :mod:`app.core.session`。"""
+    return data_dir() / "session.json"
+
+
 def log_dir() -> Path:
     return data_dir() / "logs"
 

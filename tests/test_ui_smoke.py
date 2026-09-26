@@ -16,7 +16,16 @@
 7. 歌手页（``panels/ArtistDetailPanel.qml``）：点歌手名进不去、或者点歌手名
    顺带把整行点播了（整行的 MouseArea 压在歌手名链接上面）；
 8. 专辑页（``panels/AlbumDetailPanel.qml``）：同上，另外专辑页必须盖在歌单页
-   之上、歌手页必须盖在专辑页之上，否则点进去是个看不见的页面。
+   之上、歌手页必须盖在专辑页之上，否则点进去是个看不见的页面；
+9. 恢复上次播放（``core/session.py`` + ``PlayerEngine``）：恢复出来的曲目只是
+   摆在播放栏上、媒体还没交给 ``QMediaPlayer``，这时按播放不能是空操作；进度
+   要接着上次走（``setPosition()`` 在媒体就绪前会被后端静默丢掉）；
+10. 托盘与关闭策略（``Main.qml`` 的 ``SystemTrayIcon`` + ``bridges/app.py``）：
+    关闭事件没被 ``event.accepted = false`` 拦下来（点了 ✕ 窗口直接销毁、进程也退）、
+    托盘用不了却把窗口藏了起来（用户再也找不回程序）、询问框里勾的
+    「记住我的选择」没写进设置；以及最后一步 —— 点「退出程序」必须**真的**退出
+    （``Qt.quit()`` 在托盘图标露过面之后会被吞掉，用户再点 ✕ 又弹一次询问框，
+    看着就是死循环，所以这里用 ``exit(0)``，并由 ``aboutToQuit`` 认领）。
 
 无显示环境（CI）下需要一个虚拟屏幕::
 
@@ -28,6 +37,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -71,6 +81,10 @@ class UiProbe(Application):
         from app import paths
 
         self.warnings: list[str] = []
+        # 最后一步要验「应用真的退出了」，靠 aboutToQuit 认；见 step_quit / _finish
+        self.expect_quit = False
+        self.quit_seen = False
+        self.qt_app.aboutToQuit.connect(self._on_about_to_quit)
         self.engine.warnings.connect(self._on_warn)
         self.engine.load(QUrl.fromLocalFile(str(paths.qml_dir() / "Main.qml")))
         roots = self.engine.rootObjects()
@@ -80,17 +94,35 @@ class UiProbe(Application):
         check("QML 加载", True)
         self.window = roots[0]
 
-        QTimer.singleShot(1200, self.step_startup)
-        return self.qt_app.exec()
+        QTimer.singleShot(1200, lambda: self.guard(self.step_startup))
+        self.exit_code = self.qt_app.exec()
+        return self.exit_code
 
     # ── 工具 ────────────────────────────────────────────────
     def _on_warn(self, ws):
         self.warnings.extend(w.toString() for w in ws)
 
+    def _on_about_to_quit(self) -> None:
+        self.quit_seen = True
+
     def pump(self, ms: int) -> None:
         loop = QEventLoop()
         QTimer.singleShot(ms, loop.quit)
         loop.exec()
+
+    def guard(self, step, *args) -> None:
+        """跑一个步骤；步骤里漏出来的异常记成一条失败，而不是让测试卡死。
+
+        这些步骤都是从 QTimer 回调里串起来的：回调里抛异常时事件循环再也不会
+        退出，表现是「跑到一半不动了」，比失败还难查（PySide6 也只是把回溯
+        打到 stderr）。所以每个步骤都从这里进。
+        """
+        try:
+            step(*args)
+        except Exception as e:
+            check(f"{getattr(step, '__name__', step)} 跑得完（未抛异常）", False,
+                  f"{type(e).__name__}: {e}")
+            traceback.print_exc()
 
     def wait_until(self, predicate, timeout_ms: int = 8000, step: int = 200) -> bool:
         """等某个条件成立（后台线程的结果要等事件循环转起来）。"""
@@ -172,7 +204,7 @@ class UiProbe(Application):
         self.pump(500)
         check("子窗口关闭后只剩主窗口", self.visible() == [MAIN_TITLE], f"{self.visible()}")
 
-        self.step_detail()
+        self.guard(self.step_detail)
 
     # ── 账号分区（凭据存储 / 便携模式）────────────────────────
     def check_account_section(self):
@@ -257,7 +289,7 @@ class UiProbe(Application):
             self.pump(900)
             check("点返回后覆盖层关闭", not self.detail_open())
 
-        self.step_now_playing()
+        self.guard(self.step_now_playing)
 
     # ── 展开播放页 ──────────────────────────────────────────
     def step_now_playing(self):
@@ -277,7 +309,7 @@ class UiProbe(Application):
         check("展开播放页的面板 / 遮罩 / 封面列 / 导航都在",
               None not in (panel, blocker, cover, nav))
         if None in (panel, blocker, cover, nav):
-            self.step_signal_params()
+            self.guard(self.step_signal_params)
             return
 
         # 导航第二项（44px 一项，从 y=10 开始）
@@ -338,12 +370,12 @@ class UiProbe(Application):
         self.settings.set("lyrics.alignment", "center")
         self.pump(400)
 
-        self.step_song_wiki(panel)
+        self.guard(self.step_song_wiki, panel)
 
         self.eval_js("app.setExpanded(false)")
         self.pump(600)
 
-        self.step_artist()
+        self.guard(self.step_artist)
 
     # ── 歌曲百科标签页 ──────────────────────────────────────
     def step_song_wiki(self, panel):
@@ -404,7 +436,7 @@ class UiProbe(Application):
         row = self.top_row()
         check("搜索列表渲染出曲目行", row is not None)
         if row is None:
-            self.step_signal_params()
+            self.guard(self.step_signal_params)
             return
 
         # 行里的歌手名：进歌手页，且不会顺带把歌播了
@@ -498,7 +530,7 @@ class UiProbe(Application):
         self.search.clear()
         self.pump(400)
 
-        self.step_album()
+        self.guard(self.step_album)
 
     # ── 专辑页 ──────────────────────────────────────────────
     def step_album(self):
@@ -514,7 +546,7 @@ class UiProbe(Application):
         row = self.top_row()
         check("搜索列表渲染出曲目行（专辑页用）", row is not None)
         if row is None:
-            self.step_signal_params()
+            self.guard(self.step_signal_params)
             return
 
         album_links = self.find_items("trackRowAlbumLink", row)
@@ -596,8 +628,8 @@ class UiProbe(Application):
         self.search.clear()
         self.pump(400)
 
-        self.step_overlay_stack()
-        self.step_roam()
+        self.guard(self.step_overlay_stack)
+        self.guard(self.step_roam)
 
     # ── 歌手页点专辑名：层级要按打开顺序 ────────────────────
     def step_overlay_stack(self):
@@ -676,7 +708,7 @@ class UiProbe(Application):
         self.eval_js("app.go('discover')")
         self.pump(400)
 
-        self.step_local_page()
+        self.guard(self.step_local_page)
 
     # ── 本地音乐页 ──────────────────────────────────────────
     def step_local_page(self):
@@ -710,7 +742,208 @@ class UiProbe(Application):
         self.eval_js("app.go('discover')")
         self.pump(300)
 
-        self.step_signal_params()
+        self.guard(self.step_session_restore)
+
+        self.guard(self.step_tray)
+
+        self.guard(self.step_signal_params)
+
+    # ── 托盘与「关闭主窗口时」────────────────────────────────
+    def step_tray(self):
+        """托盘图标 + 关闭主窗口的三条路。
+
+        离屏环境（以及某些 Linux 桌面）根本没有通知区域，所以先把
+        ``app._tray_available`` 假装成 True —— 不然「收进托盘」这条路一次都走不到。
+        这里守的是最要命的一种错法：托盘用不了还把窗口藏起来，用户点了 ✕
+        就再也找不回程序（纯逻辑那一半在 test_core 的 test_close_decision 里）。
+        """
+        from app.bridges.app import close_decision
+
+        # ── 托盘图标与菜单 ──────────────────────────────
+        tray = self.window.findChild(QObject, "trayIcon")
+        check("主窗口里有托盘图标", tray is not None)
+        texts = self.tray_menu_texts()
+        for want in ("显示主窗口", "上一首", "下一首", "退出"):
+            check(f"托盘菜单有「{want}」", want in texts, f"{texts}")
+        check("托盘菜单有播放 / 暂停", ("播放" in texts) or ("暂停" in texts), f"{texts}")
+        # 提示文字应当是「歌名 - 歌手」，没在播就是应用名（此刻队列已被上一步清空）
+        title = str(self.eval_value("player.title", "") or "")
+        artist = str(self.eval_value("player.artist", "") or "")
+        if title and artist:
+            expected_tip = f"{title} - {artist}"
+        else:
+            expected_tip = title or MAIN_TITLE
+        check("托盘悬停提示跟着在播曲目走",
+              str(tray.property("tooltip") or "") == expected_tip,
+              f"{tray.property('tooltip')!r} != {expected_tip!r}")
+        # 图标显不显形要看环境：真机上一般是有托盘的，离屏环境里没有
+        check("托盘图标跟着「系统支持 + 开关打开」走",
+              bool(tray.property("visible")) == bool(self.eval_value("app.trayUsable", False)),
+              f"visible={tray.property('visible')!r} "
+              f"usable={self.eval_value('app.trayUsable')!r}")
+
+        # ── 设置里的两项 ────────────────────────────────
+        self.eval_js("app.openSettings()")
+        self.pump(600)
+        win = self.find(SETTINGS_TITLE)
+        check("设置窗口开着（托盘与关闭策略在里面）", win is not None)
+        if win is not None:
+            win.setProperty("section", 0)
+            self.pump(300)
+            check("设置里有「显示托盘图标」开关",
+                  win.findChild(QObject, "trayIconSwitch") is not None)
+            check("设置里有「关闭主窗口时」下拉",
+                  win.findChild(QObject, "closeActionBox") is not None)
+            win.close()
+            self.pump(400)
+
+        # ── 假装系统有托盘 ──────────────────────────────
+        # （真机上本来就是 True，这里统一成 True：离屏环境没有通知区域）
+        had_tray = self.app._tray_available
+        self.app._tray_available = True
+        self.app.trayChanged.emit()
+        self.pump(300)
+        check("托盘可用后应用这边也认", bool(self.eval_value("app.trayUsable", False)))
+
+        self.app.setCloseAction("tray")
+        self.pump(200)
+        check("策略跟着设置走（最小化到托盘）",
+              self.eval_value("app.closeDecision()", "") == close_decision("tray", True),
+              f"{self.eval_value('app.closeDecision()')!r}")
+
+        # 真的走一次关窗事件（title 栏 ✕ / Alt+F4 那条路），而不是直接调内部函数：
+        # 要验的正是「closeListener 里把 event.accepted 置回 false 拦下了关闭」
+        self.window.close()
+        self.pump(700)
+        check("关闭被拦下：窗口是藏起来的，没被销毁",
+              self.window_alive() and not self.window.isVisible(),
+              f"alive={self.window_alive()} visible={self.window.isVisible()}")
+
+        self.eval_js("restoreFromTray()")
+        self.pump(600)
+        check("能从托盘回到窗口", bool(self.window.isVisible()))
+
+        # ── 询问框 + 记住我的选择 ───────────────────────
+        self.app.setCloseAction("ask")
+        self.pump(200)
+        self.window.close()
+        self.pump(600)
+
+        dialog = self.window.findChild(QObject, "closeDialog")
+        check("询问框弹了出来",
+              dialog is not None and bool(dialog.property("visible")),
+              f"{None if dialog is None else dialog.property('visible')}")
+        check("询问期间窗口没被关掉", self.window_alive() and bool(self.window.isVisible()))
+        if dialog is not None:
+            check("询问框的两个出口是「最小化到托盘 / 退出程序」",
+                  dialog.property("neutralText") == "最小化到托盘"
+                  and dialog.property("positiveText") == "退出程序",
+                  f"{dialog.property('neutralText')!r} / {dialog.property('positiveText')!r}")
+
+        box = self.window.findChild(QObject, "closeRememberBox")
+        check("询问框里有「记住我的选择」勾选框", box is not None)
+
+        if dialog is not None and box is not None:
+            dialog.setProperty("remember", True)
+            self.pump(200)
+            check("勾选框跟着 remember 走", bool(box.property("checked")))
+
+            self.eval_js("applyCloseChoice('tray')")
+            self.pump(800)
+            check("勾了「记住」就把选择写进了设置",
+                  self.app.closeAction == "tray", f"{self.app.closeAction!r}")
+            check("选「最小化到托盘」后窗口收走", not self.window.isVisible())
+            check("询问框自己关掉了", not bool(dialog.property("visible")))
+
+            self.eval_js("restoreFromTray()")
+            self.pump(500)
+
+        # 收尾：策略与托盘可用性恢复原样，后面的步骤照旧
+        self.app.setCloseAction("ask")
+        self.app._tray_available = had_tray
+        self.app.trayChanged.emit()
+        self.pump(300)
+
+    def window_alive(self) -> bool:
+        """主窗口对象还在不在。
+
+        ``destoryOnClose()`` 之后 QML 侧的 id 会变成已释放对象，再访问就抛
+        RuntimeError —— 这正是「点了 ✕ 窗口直接没了」的样子。
+        """
+        try:
+            return bool(self.window.property("title"))
+        except RuntimeError:
+            return False
+
+    def tray_menu_texts(self) -> list[str]:
+        """系统托盘菜单里各项的文字。
+
+        按 objectName 一个个取，而不是读 ``tray.menu.items``：``menu`` 的类型是
+        ``QQuickLabsPlatformMenu*``，Python 侧读它会抛
+        ``Can't find converter for 'QQuickLabsPlatformMenu*'``（而菜单项本身
+        是挂在窗口对象树上的，findChild 拿得到）。
+        """
+        out = []
+        for name in ("trayMenuShow", "trayMenuToggle", "trayMenuPrev",
+                     "trayMenuNext", "trayMenuQuit"):
+            item = self.window.findChild(QObject, name)
+            if item is not None:
+                out.append(str(item.property("text") or ""))
+        return out
+
+    # ── 播放会话（启动时恢复上次的队列与在播曲目）────────────
+    def step_session_restore(self):
+        """会话恢复：队列与在播曲目摆回来，按播放键从上次的进度接着放。
+
+        守的是两个很容易漏的分支：
+
+        1. 恢复出来的曲目只是**摆在播放栏上**，媒体还没交给 ``QMediaPlayer``，
+           这时 ``_player.play()`` 是空操作 —— 按播放键必须走一次正常加载；
+        2. 恢复的进度只对恢复的那一首生效，别一按下一首也从头接着上次的秒数。
+
+        曲目用的是**本地文件**（测试自己造的静音 wav）：解析不需要联网。
+        """
+        from app.core import session as play_session
+        from app.core.models import Track
+        from app.core.queue import PlayQueue
+
+        wav = Path(tempfile.mkdtemp(prefix="fusion_session_audio_")) / "probe.wav"
+        write_silent_wav(wav, seconds=3)
+
+        queue = PlayQueue()
+        queue.set_tracks([
+            Track(source="local", name="会话曲目 A", path=str(wav), interval=3),
+            Track(source="local", name="会话曲目 B", path=str(wav), interval=3),
+        ], 1)
+        check("会话写得进磁盘", play_session.save(queue, 1500) is True)
+
+        check("恢复会话成功", self.player.restoreSession() is True)
+        check("队列摆回来了", self.player.queueCount == 2, f"queueCount={self.player.queueCount}")
+        check("当前曲目是上次那首", self.current_track() == "会话曲目 B",
+              f"{self.current_track()!r}")
+        check("进度接着上次", self.player.position == 1500, f"{self.player.position}")
+        check("恢复出来不会自己出声", not self.player.playing and not self.player.paused)
+
+        # 播放栏上的歌名是 QML 侧读 player.title 绑出来的，这里读的是真渲染值
+        title = self.item("playerBarTitle")
+        check("播放栏显示了恢复出来的歌名",
+              title is not None and str(title.property("text") or "") == "会话曲目 B",
+              f"{title.property('text') if title is not None else None!r}")
+
+        # 按播放：媒体还没进来，必须真的走一次加载（否则点了没反应）
+        self.player.toggle()
+        check("按播放后开始加载", bool(self.player.loading), f"loading={self.player.loading}")
+        self.pump(900)
+        check("媒体确实交给了播放器", self.player._media_ready is True)
+
+        # 退出时写得回去
+        self.player.saveSession()
+        again = play_session.load()
+        check("退出时把会话写回去了",
+              again is not None and len(again.tracks) == 2 and again.index == 1,
+              f"{None if again is None else (len(again.tracks), again.index)}")
+
+        self.player.clearQueue()
 
     # ── 覆盖层 / 合成点击的辅助 ─────────────────────────────
     def to_point(self, item, x: float, y: float) -> QPoint:
@@ -930,7 +1163,36 @@ class UiProbe(Application):
         injected = [m for m in QT_MESSAGES if "is not declared" in m]
         check("无信号参数注入警告", not injected, f"{injected[:2]}")
 
-        self.qt_app.quit()
+        self.guard(self.step_quit)
+
+    # ── 退出程序 ────────────────────────────────────────────
+    def step_quit(self):
+        """最后一步：走「询问框 → 退出程序」，应用必须**真的**退出。
+
+        守的正是用户报上来的那个死循环：托盘图标露过面之后 ``Qt.quit()`` 会被
+        吞掉（Qt 有意让有托盘的程序不因窗口关闭而退出），点了「退出程序」毫无
+        反应，用户再点 ✕ 又弹一次询问框。这里如果退不出去，watchdog 会兜住，
+        由 ``_finish`` 报成失败，而不是让整个测试挂住。
+        """
+        self.app.setCloseAction("ask")
+        self.app._tray_available = True
+        self.app.trayChanged.emit()
+        self.pump(300)
+
+        self.window.close()              # 真关窗 → 询问框
+        self.pump(700)
+        dialog = self.window.findChild(QObject, "closeDialog")
+        check("退出的询问框已经弹出来了",
+              dialog is not None and bool(dialog.property("visible")),
+              f"{None if dialog is None else dialog.property('visible')}")
+        if dialog is not None:
+            dialog.setProperty("remember", False)
+
+        # 兜底：真卡住就 4 秒后强退，让 _finish 去报失败
+        QTimer.singleShot(4000, lambda: self.qt_app.exit(99))
+        self.expect_quit = True
+        self.eval_js("applyCloseChoice('quit')")
+        self.pump(2500)                  # 退出去的话，这里根本回不来
 
     def detail_open(self) -> bool:
         """歌单详情面板是否处于打开状态。"""
@@ -940,6 +1202,12 @@ class UiProbe(Application):
         errors = [w for w in sorted(set(self.warnings))
                   if "TypeError" in w or "is not defined" in w or "Unable to assign" in w]
         check("无 QML 运行时错误", not errors, f"{errors[:3]}")
+        if self.expect_quit:
+            check("点「退出程序」之后应用真的退出了（aboutToQuit 到了）", self.quit_seen)
+            # watchdog 是「退不出去」时的兜底，它也会触发 aboutToQuit ——
+            # 不加这一条的话，真退不出去也会被上面那条判成通过
+            check("退出不是被 watchdog 强退的", self.exit_code == 0,
+                  f"exit_code={self.exit_code}")
         print(f"\nFAILED: {FAILS if FAILS else 'none'}", flush=True)
         return 1 if FAILS else 0
 
@@ -948,6 +1216,17 @@ def check(name: str, cond: bool, detail: str = "") -> None:
     print(f"{'PASS' if cond else 'FAIL'}  {name}  {detail}", flush=True)
     if not cond:
         FAILS.append(name)
+
+
+def write_silent_wav(path: Path, seconds: float = 3.0, rate: int = 8000) -> None:
+    """造一个能真播的静音 wav（恢复会话那一步拿它当本地曲目，不联网）。"""
+    import wave
+
+    with wave.open(str(path), "wb") as f:
+        f.setnchannels(1)
+        f.setsampwidth(1)
+        f.setframerate(rate)
+        f.writeframes(b"\x80" * int(rate * seconds))
 
 
 def main() -> int:

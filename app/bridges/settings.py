@@ -120,6 +120,11 @@ class SettingsController(QObject):
         return bool(self._config.get("sources.fallback", True))
 
     @Property(bool, notify=changed)
+    def restoreSession(self) -> bool:  # noqa: N802
+        """启动时是否把上次的播放队列与在播曲目恢复出来。"""
+        return bool(self._config.get("playback.restore_session", True))
+
+    @Property(bool, notify=changed)
     def preferOriginal(self) -> bool:  # noqa: N802
         return bool(self._config.get("sources.prefer_original", True))
 

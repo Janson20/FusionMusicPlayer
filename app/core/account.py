@@ -73,6 +73,33 @@ VIP_LABELS = {
     300: "黑胶SVIP",
 }
 
+#: 会员等级用的中文数字。用的是「壹贰叁肆」这套大写写法 ——
+#: 网易云客户端显示的就是「黑胶SVIP·肆」。
+_CN_DIGITS = ("零", "壹", "贰", "叁", "肆", "伍", "陆", "柒", "捌", "玖")
+
+
+def vip_level_suffix(level: Any) -> str:
+    """会员等级后缀：``4`` → ``·肆``（拼在「黑胶SVIP」后面）。
+
+    网易云客户端写的是「黑胶SVIP·肆」而不是「黑胶SVIP Lv4」，这里跟着它。
+    等级是服务端给的：超出 1..99 时**不猜**，原样退回阿拉伯数字；
+    0 / 拿不到时返回空串，界面上就不显示等级。
+    """
+    try:
+        n = int(level)
+    except (TypeError, ValueError):
+        return ""
+    if n <= 0:
+        return ""
+    if n > 99:
+        return f"·{n}"
+    if n < 10:
+        return "·" + _CN_DIGITS[n]
+    tens, ones = divmod(n, 10)
+    head = "拾" if tens == 1 else _CN_DIGITS[tens] + "拾"
+    return "·" + head + (_CN_DIGITS[ones] if ones else "")
+
+
 class _Emitter(QObject):
     qrReady = Signal(object)
     qrPoll = Signal(object)
@@ -164,10 +191,8 @@ class AccountManager(QObject):
         if not self._logged_in:
             return ""
         if self._is_svip:
-            label = VIP_LABELS[300]
-            if self._red_vip_level > 0:
-                label += f" Lv{self._red_vip_level}"
-            return label
+            # 「黑胶SVIP·肆」，不是「黑胶SVIP Lv4」（见 vip_level_suffix）
+            return VIP_LABELS[300] + vip_level_suffix(self._red_vip_level)
         if self._has_black_vip or (self._vip_type & 10) == 10 or self._vip_type in (10, 11):
             return VIP_LABELS[100]
         if self._has_music_package or (self._vip_type & 1) == 1 or self._vip_type == 1:
@@ -199,6 +224,8 @@ class AccountManager(QObject):
         if self._has_music_package:
             parts.append("音乐包")
         if self._red_vip_level > 0:
+            # 这一行是排查用的，等级特意保留服务端原始的「LvN」写法：
+            # 界面上显示的是「·肆」，报问题时得能和服务端返回的数字对上
             parts.append(f"等级 Lv{self._red_vip_level}")
         if self._red_vip_annual_count > 0:
             parts.append("年费")

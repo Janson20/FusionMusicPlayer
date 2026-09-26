@@ -232,6 +232,45 @@ FluWindow {
                         checked: settings.navExpanded
                         onToggled: function (value) { settings.setBool("appearance.nav_expanded", value) }
                     }
+
+                    SectionHeader { Layout.fillWidth: true; title: "窗口" }
+                    SettingSwitch {
+                        objectName: "trayIconSwitch"
+                        label: "显示托盘图标"
+                        description: app.trayAvailable
+                            ? "在系统托盘常驻：点图标回到主窗口，右键菜单能直接播放 / 暂停与切歌"
+                            : "当前系统没有可用的通知区域（托盘），这个开关不起作用"
+                        checked: app.trayEnabled
+                        enabledControl: app.trayAvailable
+                        onToggled: function (value) { app.setTrayEnabled(value) }
+                    }
+                    SectionHeader {
+                        Layout.fillWidth: true
+                        title: "关闭主窗口时"
+                        subtitle: app.trayUsable
+                            ? "选「每次询问」时，询问框里勾上「记住我的选择」就等于在这里改"
+                            : "托盘用不了（系统不支持，或上面那个开关关着），关闭窗口就是退出程序"
+                    }
+                    FluComboBox {
+                        objectName: "closeActionBox"
+                        Layout.preferredWidth: 300
+                        model: {
+                            var names = []
+                            var opts = app.closeActionOptions
+                            for (var i = 0; i < opts.length; i++)
+                                names.push(opts[i].name)
+                            return names
+                        }
+                        currentIndex: {
+                            var opts = app.closeActionOptions
+                            for (var i = 0; i < opts.length; i++)
+                                if (opts[i].id === app.closeAction) return i
+                            return 0
+                        }
+                        onActivated: function (index) {
+                            app.setCloseAction(app.closeActionOptions[index].id)
+                        }
+                    }
                 }
 
                 // ═══ 播放 ═══════════════════════════════════
@@ -280,6 +319,12 @@ FluWindow {
                         description: "在搜索结果中标记并置顶原唱版本（含百度百科兜底查询）"
                         checked: settings.preferOriginal
                         onToggled: function (value) { settings.setBool("sources.prefer_original", value) }
+                    }
+                    SettingSwitch {
+                        label: "启动时恢复上次播放"
+                        description: "重新打开程序时把上次的播放队列与在播曲目摆回来，并从上次的进度接着放（不自动出声，按播放键才开始）"
+                        checked: settings.restoreSession
+                        onToggled: function (value) { settings.setBool("playback.restore_session", value) }
                     }
                     FluText {
                         Layout.fillWidth: true

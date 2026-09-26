@@ -126,6 +126,7 @@ Rectangle {
                 spacing: 4
 
                 FluText {
+                    objectName: "playerBarTitle"
                     Layout.fillWidth: true
                     text: player.title !== "" ? player.title : "未在播放"
                     font.pixelSize: 13
