@@ -209,26 +209,30 @@ Item {
                     visible: player.artist !== ""
 
                     Repeater {
-                        model: ArtistNames.split(player.artist)
+                        model: ArtistNames.linkParts(player.artist)
                         delegate: FluText {
-                            required property string modelData
-                            required property int index
+                            required property var modelData
 
-                            objectName: "nowPlayingArtistLink"
+                            // 分隔符单独成项，不参与悬停高亮也不吃点击
+                            objectName: modelData.separator
+                                ? "nowPlayingArtistSep" : "nowPlayingArtistLink"
                             Layout.alignment: Qt.AlignVCenter
-                            Layout.maximumWidth: 220
-                            text: (index > 0 ? " / " : "") + modelData
+                            Layout.maximumWidth: modelData.separator
+                                ? Number.POSITIVE_INFINITY : 220
+                            text: modelData.text
                             font.pixelSize: 13
-                            font.underline: npArtistMouse.containsMouse
-                            color: npArtistMouse.containsMouse ? Theme.accent : Theme.textSecondary
+                            font.underline: !modelData.separator && npArtistMouse.containsMouse
+                            color: (!modelData.separator && npArtistMouse.containsMouse)
+                                   ? Theme.accent : Theme.textSecondary
                             elide: Text.ElideRight
 
                             MouseArea {
                                 id: npArtistMouse
                                 anchors.fill: parent
+                                enabled: !modelData.separator
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
-                                onClicked: control.openArtist(modelData)
+                                onClicked: control.openArtist(modelData.name)
                             }
                         }
                     }

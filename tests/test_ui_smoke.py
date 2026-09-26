@@ -413,6 +413,25 @@ class UiProbe(Application):
         # 点下去找的是「A、B」这个不存在的歌手（真机上弹「没找到歌手」）；
         # 拆得开的前提是扫描时把标签归一化过（见 test_core 的歌手拆分用例）。
         check("两个歌手渲染成两个可点的名字", len(links) == 2, f"{len(links)} 个")
+
+        # 中间那个「 / 」必须是**独立**的一项：塞进歌手名的文本里的话，悬停时
+        # 下划线会把它一起划上、点击区域也把它算进去，看着像名字的一部分。
+        seps = self.find_items("trackRowArtistSep", row)
+        check("歌手之间的分隔符是独立的一项", len(seps) == 1, f"{len(seps)} 个")
+        check("歌手名里不带分隔符",
+              all("/" not in str(t.property("text")) for t in links),
+              f"{[t.property('text') for t in links]}")
+
+        # 悬停第二位歌手：只有它自己高亮，分隔符不能跟着变
+        ordered = sorted(links, key=lambda i: i.mapToItem(None, QPointF(0, 0)).x())
+        if len(ordered) == 2 and seps:
+            target = ordered[1]
+            QTest.mouseMove(self.window, self.to_point(
+                target, target.property("width") / 2, target.property("height") / 2))
+            self.pump(400)
+            check("悬停歌手名时它自己高亮", self.text_underline(target) is True)
+            check("悬停时分隔符不跟着高亮", self.text_underline(seps[0]) is False)
+
         playing_before = self.current_track()
         if links:
             self.click_item(links[0])
@@ -787,6 +806,16 @@ class UiProbe(Application):
             if children is not None:
                 stack.extend(children())
         return out
+
+    def text_underline(self, item) -> bool | None:
+        """文本有没有下划线；读不到返回 None。
+
+        走 QML 表达式：``font`` 是分组属性，从 Python 侧读会在转换上踩坑
+        （和 :meth:`lyric_alignment` 里 ``horizontalAlignment`` 一样）。
+        """
+        expr = QQmlExpression(self.engine.rootContext(), item, "font.underline")
+        value, _ = expr.evaluate()
+        return None if expr.hasError() else bool(value)
 
     def lyric_alignment(self, expected) -> bool | None:
         """第一条歌词行的水平对齐是否等于 expected；没有渲染出来时返回 None。

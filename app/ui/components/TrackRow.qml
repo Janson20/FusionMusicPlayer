@@ -177,26 +177,29 @@ Rectangle {
                 spacing: 0
 
                 Repeater {
-                    model: ArtistNames.split(control.singer)
+                    model: ArtistNames.linkParts(control.singer)
                     delegate: FluText {
-                        required property string modelData
-                        required property int index
+                        required property var modelData
 
-                        objectName: "trackRowArtistLink"
+                        // 分隔符是**独立**的一项：不跟着悬停变强调色、也没有下划线，
+                        // 更不吃点击（塞进歌手名里的话「 / 」会一起被划上）
+                        objectName: modelData.separator ? "trackRowArtistSep" : "trackRowArtistLink"
                         Layout.alignment: Qt.AlignVCenter
-                        Layout.maximumWidth: 190
-                        text: (index > 0 ? " / " : "") + modelData
+                        Layout.maximumWidth: modelData.separator ? Number.POSITIVE_INFINITY : 190
+                        text: modelData.text
                         font.pixelSize: 11
-                        font.underline: artistMouse.containsMouse
-                        color: artistMouse.containsMouse ? Theme.accent : Theme.textTertiary
+                        font.underline: !modelData.separator && artistMouse.containsMouse
+                        color: (!modelData.separator && artistMouse.containsMouse)
+                               ? Theme.accent : Theme.textTertiary
                         elide: Text.ElideRight
 
                         MouseArea {
                             id: artistMouse
                             anchors.fill: parent
+                            enabled: !modelData.separator
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: control.artistRequested(modelData)
+                            onClicked: control.artistRequested(modelData.name)
                         }
                     }
                 }

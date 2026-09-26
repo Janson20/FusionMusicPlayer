@@ -4,6 +4,7 @@ import QtQuick.Layouts
 import FluentUI
 import ".."
 import "../components"
+import "../ArtistNames.js" as ArtistNames
 
 /*!
     专辑详情覆盖层：封面 / 专辑名 / 歌手 / 发行信息 + 曲目列表。
@@ -159,26 +160,30 @@ Item {
                     visible: control.artistNames.length > 0
 
                     Repeater {
-                        model: control.artistNames
+                        model: ArtistNames.linkPartsOf(control.artistNames)
                         delegate: FluText {
                             required property var modelData
-                            required property int index
 
-                            objectName: "albumArtistLink"
+                            // 分隔符单独成项，不参与悬停高亮也不吃点击
+                            objectName: modelData.separator
+                                ? "albumArtistSep" : "albumArtistLink"
                             Layout.alignment: Qt.AlignVCenter
-                            Layout.maximumWidth: 220
-                            text: (index > 0 ? " / " : "") + modelData.name
+                            Layout.maximumWidth: modelData.separator
+                                ? Number.POSITIVE_INFINITY : 220
+                            text: modelData.text
                             font.pixelSize: 13
-                            font.underline: albumArtistMouse.containsMouse
-                            color: albumArtistMouse.containsMouse ? Theme.accent : Theme.textSecondary
+                            font.underline: !modelData.separator && albumArtistMouse.containsMouse
+                            color: (!modelData.separator && albumArtistMouse.containsMouse)
+                                   ? Theme.accent : Theme.textSecondary
                             elide: Text.ElideRight
 
                             MouseArea {
                                 id: albumArtistMouse
                                 anchors.fill: parent
+                                enabled: !modelData.separator
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
-                                onClicked: artist.openById(modelData.id, modelData.name)
+                                onClicked: artist.openById(modelData.item.id, modelData.item.name)
                             }
                         }
                     }
