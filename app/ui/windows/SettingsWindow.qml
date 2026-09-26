@@ -11,10 +11,14 @@ import "../components"
 FluWindow {
     id: window
 
-    width: 860
-    height: 640
-    minimumWidth: 760
-    minimumHeight: 540
+    // 尺寸同样要过一遍屏幕：低分辨率下 860×640 的窗口会比桌面还高，
+    // 底部的按钮就点不到了（见 bridges/app.py 的 fit_window）。
+    readonly property var fitted: app.fitWindow(860, 640, 760, 540)
+
+    width: fitted.width
+    height: fitted.height
+    minimumWidth: Math.min(760, fitted.width)
+    minimumHeight: Math.min(540, fitted.height)
     title: "设置"
     visible: false
     // 关闭时只隐藏、不销毁：FluWindow 默认 closeDestory=true 会 deleteLater()，
@@ -606,6 +610,13 @@ FluWindow {
                         description: "程序启动后自动重新扫描已添加的文件夹"
                         checked: settings.scanOnStart
                         onToggled: function (value) { settings.setBool("local.scan_on_start", value) }
+                    }
+
+                    SettingSwitch {
+                        label: "自动匹配封面与歌词"
+                        description: "扫描时按「歌名 + 歌手」在线匹配并核对时长，只写进曲库索引，不改动音乐文件；曲库很大时首次扫描会慢一些，之后重扫沿用上次结果"
+                        checked: settings.matchLocalOnline
+                        onToggled: function (value) { settings.setBool("local.match_online", value) }
                     }
 
                     Repeater {

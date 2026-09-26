@@ -184,6 +184,11 @@ class SettingsController(QObject):
     def scanOnStart(self) -> bool:  # noqa: N802
         return bool(self._config.get("local.scan_on_start", False))
 
+    @Property(bool, notify=changed)
+    def matchLocalOnline(self) -> bool:  # noqa: N802
+        """扫描本地曲库时，是否按「歌名 + 歌手」在线匹配封面与歌词。"""
+        return bool(self._config.get("local.match_online", True))
+
     @Property("QVariantList", notify=changed)
     def enabledSources(self):  # noqa: N802
         from ..sources import SOURCE_META

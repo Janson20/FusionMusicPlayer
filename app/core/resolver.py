@@ -239,7 +239,13 @@ def _maybe_localize(
     return (local, True)
 
 def resolve_local_metadata(path: str) -> Optional[Track]:
-    """读取本地音频文件的标签，构造 :class:`Track`。"""
+    """读取本地音频文件的标签，构造 :class:`Track`。
+
+    封面优先用**文件里内嵌的那张**（读出来就写进封面缓存，见
+    :func:`app.core.cache.store_cover_bytes`）；没有内嵌封面时留空，由扫描阶段
+    的在线匹配去补（见 :mod:`app.core.localmatch`）。歌词一概不在这里碰 ——
+    同目录 ``.lrc`` 播放时现读，在线匹配到的歌词也要到播放时才取。
+    """
     p = Path(path)
     if not p.exists() or p.suffix.lower() not in AUDIO_EXTENSIONS:
         return None
@@ -248,7 +254,6 @@ def resolve_local_metadata(path: str) -> Optional[Track]:
     singer = ""
     album = ""
     duration = 0
-    cover = ""
     try:
         from mutagen import File as MutagenFile
 
@@ -270,9 +275,74 @@ def resolve_local_metadata(path: str) -> Optional[Track]:
         singer=singer,
         album=album,
         interval=duration,
-        cover=cover,
+        cover=_embedded_cover(path),
         path=str(p.resolve()),
     )
+
+def _embedded_cover(path: str) -> str:
+    """把音频文件里内嵌的封面写进封面缓存，返回 ``file://`` URL（没有返回空串）。
+
+    识别不了 / 读不出来都当作「没有封面」，交给在线匹配，不打扰扫描。
+    """
+    try:
+        data, mime = read_picture(path)
+    except Exception as e:
+        logger.debug("读取内嵌封面失败 %s: %s", path, e)
+        return ""
+    if not data:
+        return ""
+    return cache.store_cover_bytes(path, data, mime) or ""
+
+def read_picture(path: str) -> Tuple[bytes, str]:
+    """从音频文件里取第一张内嵌封面，返回 ``(数据, MIME)``；没有返回 ``(b"", "")``。
+
+    mutagen 把封面放在三个不同的地方，只能挨个试：
+
+    * FLAC / Ogg —— 文件对象上的 ``.pictures``
+    * MP3 / WAV / AIFF —— ID3 的 ``APIC`` 帧
+    * MP4 / M4A —— 标签里的 ``covr``
+
+    注意这里用的是**非 easy** 的 ``MutagenFile``：``easy=True`` 会把 ID3 换成
+    EasyID3、把 MP4 的标签换成 EasyMP4Tags，两者都不保留图片。所以文本标签在
+    :func:`resolve_local_metadata` 里读一遍、这里为了图片再读一遍（mutagen 只解
+    标签块，不解码音频，代价可接受）。
+    """
+    from mutagen import File as MutagenFile
+
+    mf = MutagenFile(path)
+    if mf is None:
+        return b"", ""
+
+    for picture in getattr(mf, "pictures", None) or []:
+        data = getattr(picture, "data", None)
+        if data:
+            return bytes(data), str(getattr(picture, "mime", "") or "")
+
+    tags = getattr(mf, "tags", None)
+    if not tags:
+        return b"", ""
+
+    getter = getattr(tags, "getall", None)
+    if callable(getter):
+        for frame in getter("APIC") or []:
+            data = getattr(frame, "data", None)
+            if data:
+                return bytes(data), str(getattr(frame, "mime", "") or "")
+
+    try:
+        covers = tags.get("covr") or []
+    except Exception:
+        covers = []
+    for cover in covers:
+        try:
+            data = bytes(cover)
+        except Exception:
+            continue
+        if data:
+            # mutagen.mp4.MP4Cover.imageformat：13 = JPEG、14 = PNG
+            mime = "image/png" if getattr(cover, "imageformat", None) == 14 else "image/jpeg"
+            return data, mime
+    return b"", ""
 
 def _first(tags: Dict[str, object], keys) -> str:
     for k in keys:

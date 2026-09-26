@@ -12,9 +12,10 @@
    点到底下的导航栏，隐藏歌词后封面区赖在左边，歌词写死靠左；
 5. 展开播放页的「百科」标签页：切过去歌词还盖在原地、切回来回不去，以及
    没打开百科页就去联网取数（每切一首歌白跑三个请求）；
-6. 歌手页（``panels/ArtistDetailPanel.qml``）：点歌手名进不去、或者点歌手名
+6. 本地音乐页：添加文件夹退回成「手输路径」的输入框（要的是系统选择器）；
+7. 歌手页（``panels/ArtistDetailPanel.qml``）：点歌手名进不去、或者点歌手名
    顺带把整行点播了（整行的 MouseArea 压在歌手名链接上面）；
-7. 专辑页（``panels/AlbumDetailPanel.qml``）：同上，另外专辑页必须盖在歌单页
+8. 专辑页（``panels/AlbumDetailPanel.qml``）：同上，另外专辑页必须盖在歌单页
    之上、歌手页必须盖在专辑页之上，否则点进去是个看不见的页面。
 
 无显示环境（CI）下需要一个虚拟屏幕::
@@ -555,6 +556,40 @@ class UiProbe(Application):
 
         self.eval_js("app.go('discover')")
         self.pump(400)
+
+        self.step_local_page()
+
+    # ── 本地音乐页 ──────────────────────────────────────────
+    def step_local_page(self):
+        """本地音乐页的文件夹要走**系统选择器**，不能又退回让人手输路径。
+
+        以前这里是个「粘贴文件夹的完整路径」的输入框：容易打错，也没法浏览。
+        换成 ``QtQuick.Dialogs`` 的 FolderDialog 之后，选出来的是 ``file://`` URL，
+        得靠 Python 侧归一化（``library.normalize_folder``）—— 那一条由
+        ``test_core.py`` 盯，这里只确认界面上挂的确实是系统选择器。
+        """
+        self.eval_js("app.go('local')")
+        self.pump(700)
+
+        dialog = self.window.findChild(QObject, "localFolderDialog")
+        check("本地音乐页有文件夹选择器", dialog is not None)
+        if dialog is not None:
+            # 认能力不认类名：PySide 给 QQuickFolderDialog 报的 className() 是
+            # "QFileDialogOptions"（它基类上的 options 对象），照类名判断会误判。
+            # 真正的区分点是 selectedFolder —— InputDialog 没有这个属性。
+            check("选择器是系统 FolderDialog 而不是输入框",
+                  dialog.property("selectedFolder") is not None
+                  and not hasattr(dialog, "openWith"),
+                  f"{dialog.metaObject().className()}")
+            # 标题来自我们自己的 QML，能确认挂上来的就是这一个
+            check("选择器的标题来自本地音乐页",
+                  str(dialog.property("title")) == "选择音乐文件夹",
+                  repr(dialog.property("title")))
+
+        check("扫描阶段属性可用", self.eval_value("library.scanPhase", None) is not None)
+
+        self.eval_js("app.go('discover')")
+        self.pump(300)
 
         self.step_signal_params()
 

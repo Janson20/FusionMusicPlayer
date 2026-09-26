@@ -57,6 +57,10 @@ class Track:
     play_count: int = 0
     # 本地文件字段
     path: str = ""
+    # 本地文件**在线匹配**到的身份（封面与歌词是从哪个音源的哪首歌来的，
+    # 见 app/core/localmatch.py）。在线曲目留空，此时它自己的 source/songmid 就是身份。
+    match_source: str = ""
+    match_songmid: str = ""
     # 元信息
     added_at: int = 0
     # 推荐理由（「你关注的音乐人新歌」这种）。只用于展示，不进 to_dict，

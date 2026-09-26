@@ -1049,6 +1049,25 @@ def pick_wiki_song(
     picked = exact or loose
     return picked[0] if picked else None
 
+def search_song_match(
+    name: str, singer: str = "", interval: int = 0, limit: int = 10
+) -> Optional[MusicInfo]:
+    """按「歌名 + 歌手」搜一首歌并核对，返回匹配到的曲目（没匹配到返回 ``None``）。
+
+    本地音乐的封面 / 歌词靠它定位，所以**核对比搜索本身重要**：歌名对得上
+    （:func:`same_title`）**并且**时长在 15 秒容差内才算 —— 翻唱、伴奏、Live
+    就是被时长这一关挡掉的（判据见 :func:`pick_wiki_song`）。
+    """
+    name = str(name or "").strip()
+    if not name:
+        return None
+    src = _wy()
+    if src is None:
+        return None
+    keyword = f"{name} {singer}".strip()
+    songs = _safe(lambda: src.search(keyword, 1, int(limit)), []) or []
+    return pick_wiki_song(list(songs), name, interval)
+
 def song_release(album_id: str = "", album_name: str = "", artist: str = "") -> Dict:
     """发行信息：发行时间与发行版本（供歌曲百科补「百科接口没有」的两行）。
 
@@ -1111,11 +1130,9 @@ def song_wiki(
         if hit is not None:
             return hit
     else:
-        src = _wy()
-        if src is None or not name:
+        if not name:
             return {}
-        songs = _safe(lambda: src.search(f"{name} {singer}".strip(), 1, 10), []) or []
-        matched = pick_wiki_song(list(songs), name, interval)
+        matched = search_song_match(name, singer, interval)
         if matched is None or not matched.songmid:
             return {}
         song_id = str(matched.songmid)

@@ -97,6 +97,9 @@ DROP_QT_DLLS = {
     "Qt6QuickControls2Universal.dll",
     "Qt6QuickControls2Fusion.dll",
     "Qt6QuickControls2Windows.dll",
+    # 注意：本地音乐页的系统文件夹选择器走 QtQuick.Dialogs（QML 里 import 的，
+    # Python 侧看不见），所以 Qt6QuickDialogs2*.dll 与 qml/QtQuick/Dialogs/ 都得留着。
+    # 它们本来就不在上面的名单里，别为了瘦身手滑加进来。
 }
 
 # Pillow 只用来给 qrcode 渲染 PNG，其它解码器都可以去掉
@@ -114,6 +117,9 @@ DROP_DATA_PARTS = (
     "qml/QtQuick/Controls/Fusion",
     "qml/QtQuick/Controls/Windows",
     "qml/QtQuick/Controls/designer",
+    # 注意：qml/QtQuick/Dialogs/quickimpl/qml/+{Fusion,Imagine,Material,Universal}
+    # 是「非原生对话框」的实现，不要跟着上面的风格一起删 —— 系统选择器不可用时
+    # （部分 Linux 桌面）会回退到它们。
     # 仅用于 QML 调试
     "plugins/qmltooling",
 )

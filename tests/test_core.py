@@ -524,6 +524,181 @@ def test_pick_wiki_song():
     assert pick_wiki_song(songs, "", 100) is None
 
 
+# ──────────────────────────────────────────────────────────────
+# 窗口尺寸 / 本地音乐的在线匹配
+# ──────────────────────────────────────────────────────────────
+
+
+def test_window_size_fits_screen():
+    """窗口尺寸：够大就用想要的，屏幕小就让位，屏幕比下限还小则下限让位。
+
+    1366×768 上任务栏一占可用高度只剩 728，760 的窗口会把底部播放栏顶出屏幕；
+    1366×768 开 125% 缩放更极端（可用区域 1093×582，比窗口的最小高度还矮）。
+    """
+    from app.bridges.app import (
+        SCREEN_MARGIN,
+        WINDOW_DEFAULT_H,
+        WINDOW_DEFAULT_W,
+        WINDOW_FLOOR_H,
+        WINDOW_FLOOR_W,
+        fit_window,
+    )
+
+    # 屏幕够大：想要多大就多大
+    assert fit_window(1180, 1920, 880) == 1180
+    assert fit_window(760, 1040, 560) == 760
+    # 屏幕装不下：夹到「可用区域 − 边距」
+    assert fit_window(760, 728, 560) == 728 - SCREEN_MARGIN
+    assert fit_window(1180, 1093, 880) == 1093 - SCREEN_MARGIN
+    # 比下限还小：抬到下限（用户手动拖小了也不能小于它）
+    assert fit_window(600, 1920, 880) == 880
+    # 屏幕比下限还小：下限让位给屏幕，否则窗口自己就被撑出屏幕
+    assert fit_window(560, 480, 560) == 480 - SCREEN_MARGIN
+    assert fit_window(1180, 300, 880) == 300 - SCREEN_MARGIN
+    # 拿不到屏幕信息（无显示器 / 远程会话）：只保证不小于下限
+    assert fit_window(1180, 0, 880) == 1180
+    assert fit_window(600, 0, 880) == 880
+    # 脏数据不能把窗口搞成 0，也不能抛异常
+    assert fit_window("bad", 1920, 880) == WINDOW_DEFAULT_W
+    assert fit_window(1180, -5, 880) == 1180
+    assert fit_window(10, 10, 880) >= 1
+
+    assert WINDOW_DEFAULT_W > WINDOW_FLOOR_W
+    assert WINDOW_DEFAULT_H > WINDOW_FLOOR_H
+
+
+def test_local_match_rules():
+    """本地曲目的在线匹配：什么时候去搜、匹配到之后写什么、什么时候沿用上次的。"""
+    from app.core import localmatch
+    from app.sources.base import MusicInfo
+
+    def local(name, path, *, cover="", interval=200, matched=False):
+        track = Track(source="local", songmid=path, name=name, singer="歌手",
+                      interval=interval, path=path, cover=cover)
+        if matched:
+            track.match_source, track.match_songmid = "wy", "42"
+        return track
+
+    # 缺封面 → 必须匹配
+    assert localmatch.needs_match(local("歌", "x.mp3")) is True
+    # 有内嵌封面 + 有同目录 .lrc → 什么都不缺，不必联网
+    assert localmatch.needs_match(local("歌", "x.mp3", cover="file:///c.jpg"),
+                                  has_lyric=True) is False
+    # 有内嵌封面但没有歌词 → 还得匹配一次（歌词要用在线身份）
+    assert localmatch.needs_match(local("歌", "x.mp3", cover="file:///c.jpg"),
+                                  has_lyric=False) is True
+    # 已经匹配过了 → 不再重复搜
+    assert localmatch.needs_match(local("歌", "x.mp3", cover="file:///c.jpg",
+                                        matched=True), has_lyric=False) is False
+    # 连歌名都没有的没法搜
+    assert localmatch.needs_match(Track(source="local", path="x.mp3")) is False
+    assert localmatch.needs_match(None) is False
+
+    # 匹配结果：记身份 + 补封面
+    track = local("歌", "x.mp3")
+    info = MusicInfo(name="歌", singer="歌手", source="wy", songmid="42",
+                     album_name="专辑", img="http://cover/1.jpg", interval=200)
+    assert localmatch.apply_match(track, info) is True
+    assert (track.match_source, track.match_songmid) == ("wy", "42")
+    assert track.cover == "http://cover/1.jpg"
+
+    # 内嵌封面比在线封面准：只补不覆盖
+    track = local("歌", "x.mp3", cover="file:///inner.jpg")
+    assert localmatch.apply_match(track, info) is True
+    assert track.cover == "file:///inner.jpg"
+    # 没有 id 的匹配结果一律不认
+    assert localmatch.apply_match(local("歌", "x.mp3"), None) is False
+    assert localmatch.apply_match(
+        local("歌", "x.mp3"), MusicInfo(name="歌", singer="", source="wy", songmid="")
+    ) is False
+
+    # 重扫沿用：只有时长一致才认
+    old = local("歌", "x.mp3", interval=200, matched=True)
+    old.cover = "http://cover/1.jpg"
+    table = localmatch.reuse_matches([old, local("没匹配过", "y.mp3")])
+    assert list(table) == [localmatch.key_for_path("x.mp3")]
+
+    fresh = local("歌", "x.mp3", interval=200)
+    assert localmatch.adopt_match(fresh, old) is True
+    assert (fresh.match_source, fresh.match_songmid) == ("wy", "42")
+    assert fresh.cover == "http://cover/1.jpg"
+    # 文件被换成别的歌（时长变了）→ 不认，重新匹配
+    assert localmatch.adopt_match(local("歌", "x.mp3", interval=260), old) is False
+    # 时长读不出来 → 没有依据，也不认
+    assert localmatch.adopt_match(local("歌", "x.mp3", interval=0), old) is False
+    # 新读出来的内嵌封面不会被上次的在线封面顶掉
+    fresh = local("歌", "x.mp3", interval=200, cover="file:///inner.jpg")
+    assert localmatch.adopt_match(fresh, old) is True
+    assert fresh.cover == "file:///inner.jpg"
+    assert localmatch.adopt_match(None, old) is False
+    assert localmatch.adopt_match(local("歌", "x.mp3"), None) is False
+
+    assert localmatch.matched_count([old, fresh]) == 2
+    assert localmatch.matched_count([]) == 0
+    assert [t.name for t in localmatch.pending_matches([old, local("缺封面", "z.mp3")])] \
+        == ["缺封面"]
+
+
+def test_read_embedded_cover():
+    """内嵌封面：MP3 的 ID3 APIC 读得出来，没有封面时返回空（交给在线匹配）。
+
+    顺手把「读出来就写进封面缓存」这条链路走一遍 —— 封面来自本地文件的标签，
+    QML 自己解析不了，必须先在扫描时落成文件。
+    """
+    import os
+    import tempfile
+    from pathlib import Path
+
+    from PySide6.QtCore import QUrl
+
+    from app.core.resolver import read_picture, resolve_local_metadata
+
+    png = bytes.fromhex(
+        "89504e470d0a1a0a0000000d494844520000000100000001080600000"
+        "01f15c4890000000a49444154789c6360000002000100ffff0300000600"
+        "05570c1f0000000049454e44ae426082"
+    )
+    tmp = Path(tempfile.mkdtemp(prefix="fusion_cover_"))
+
+    def write_mp3(path, *, with_cover):
+        from mutagen.id3 import APIC, ID3, TALB, TPE1, TIT2
+
+        header = b"\xff\xfb\x90\x00"
+        path.write_bytes((header + b"\x00" * (417 - len(header))) * 40)
+        tags = ID3()
+        tags.add(TIT2(encoding=3, text="测试歌曲"))
+        tags.add(TPE1(encoding=3, text="测试歌手"))
+        tags.add(TALB(encoding=3, text="测试专辑"))
+        if with_cover:
+            tags.add(APIC(encoding=3, mime="image/png", type=3, desc="Cover", data=png))
+        tags.save(str(path))
+
+    with_cover = tmp / "with.mp3"
+    without = tmp / "without.mp3"
+    write_mp3(with_cover, with_cover=True)
+    write_mp3(without, with_cover=False)
+
+    assert read_picture(str(with_cover)) == (png, "image/png")
+    assert read_picture(str(without)) == (b"", "")
+
+    # 封面缓存落在数据目录里，测试期间临时指到 tmp
+    previous = os.environ.get("FUSION_MUSIC_HOME")
+    os.environ["FUSION_MUSIC_HOME"] = str(tmp / "data")
+    try:
+        track = resolve_local_metadata(str(with_cover))
+        assert track.name == "测试歌曲" and track.singer == "测试歌手"
+        assert track.cover.startswith("file://")
+        cached = Path(QUrl(track.cover).toLocalFile())
+        assert cached.exists() and cached.read_bytes() == png
+        # 没有内嵌封面的留空，由在线匹配去补
+        assert resolve_local_metadata(str(without)).cover == ""
+    finally:
+        if previous is None:
+            os.environ.pop("FUSION_MUSIC_HOME", None)
+        else:
+            os.environ["FUSION_MUSIC_HOME"] = previous
+
+
 def test_roam_refill_rules():
     """漫游续歌的时机：早了会断，晚了会疯了一样往队列里塞歌。"""
     from app.core.roam import clean_reason, needs_refill, pick_playable

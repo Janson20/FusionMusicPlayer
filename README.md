@@ -14,6 +14,10 @@
 主界面、底部播放栏（封面 / 传输控件 / 展开箭头），底部栏可向上展开为
 「大封面 + 歌词 / 歌曲百科」的播放页。
 
+窗口尺寸**按屏幕可用区域（已排除任务栏）算**，不是写死的：小屏（1366×768 被
+任务栏吃掉一截、或者 125% 缩放）下自动缩到装得下，连最小尺寸也一起让位，
+免得底部播放栏被顶到屏幕外面点不到。设置 / 登录窗口同理。
+
 | 发现音乐 | 搜索 |
 |---|---|
 | ![发现音乐](docs/screenshots/discover.png) | ![搜索](docs/screenshots/search.png) |
@@ -125,6 +129,20 @@ set FUSION_MUSIC_HOME=D:\Music\FusionData && python main.py
 * 本地音乐扫描（`mutagen` 读取标签与时长），支持同目录 `.lrc` 字幕
 * 全部落盘在程序目录，原子写入，解析失败时备份为 `*.corrupt` 而不是丢弃
 
+### 本地音乐
+* 添加文件夹用**系统文件夹选择器**（`QtQuick.Dialogs` 的 `FolderDialog`），
+  不用手打路径 —— 选出来的是 `file://` URL，Python 侧统一归一化
+* 扫描读标签与时长之外，还会读**文件里内嵌的封面**（MP3 的 ID3 `APIC`、
+  FLAC/Ogg 的 `pictures`、MP4 的 `covr`），落进封面缓存后直接当封面用
+* 剩下的**按「歌名 + 歌手」在线匹配**网易云：歌名对得上 + 时长在 15 秒内才算，
+  匹配上就补上专辑封面，并记下这首歌在网易云的**身份**
+* **歌词不在扫描阶段抓**：几千首本地歌就是几千个请求，所以只记身份，
+  播放时才按它去取歌词（翻译 / 罗马音照旧）。同目录有 `.lrc` 时优先用本地的
+* 匹配结果跟着 `local.json` 落盘；重扫按「路径 + 时长」沿用，不重复搜索，
+  文件被换成别的歌（时长变了）才重新匹配
+* 扫描分两段，界面按阶段显示进度（`扫描文件 120/850`、`匹配封面与歌词 300/850`）
+* 曲库很大时首次匹配会慢一些，可在「设置 → 本地音乐」关掉自动匹配
+
 ### 歌手 / 专辑
 * **任何地方的歌手名 / 专辑名都能点**：曲目行、播放栏、展开播放页，右键菜单里
   还能在多位歌手里挑一位（「查看歌手 → 洛天依」）
@@ -174,7 +192,7 @@ set FUSION_MUSIC_HOME=D:\Music\FusionData && python main.py
 
 ```bash
 python main.py                       # 运行
-python tests/test_core.py            # 核心逻辑回归（离线，32 项）
+python tests/test_core.py            # 核心逻辑回归（离线，35 项）
 python tests/test_ui_smoke.py        # QML 界面冒烟（需要显示环境）
 python tools/check_qml_signals.py    # QML 信号处理器静态检查
 python tools/account_probe.py        # 排查网易云账号识别问题（不打印 Cookie）
@@ -183,7 +201,9 @@ python tools/account_probe.py        # 排查网易云账号识别问题（不�
 `tests/test_core.py` 覆盖凭据加密仓库（往返、篡改检测、缺文件）、
 LRC 解析（补零、offset、一行多标签、翻译配对、当前行二分与缓存）、
 播放队列（四种播放模式、洗牌不重复、历史回溯、增删移动、序列化）、
-歌曲百科解析（取值位置随字段类型而变、行顺序、空数据降级、按名字选曲核对）
+歌曲百科解析（取值位置随字段类型而变、行顺序、空数据降级、按名字选曲核对）、
+窗口尺寸夹取（小屏 / 无显示器 / 脏数据）、本地音乐匹配规则（何时去搜、
+内嵌封面优先、重扫沿用要看时长）、内嵌封面读取（真的造一个带 ID3 封面的 mp3）
 与曲目模型，**不依赖 Qt 界面也不联网**，可直接交给 pytest。
 
 `tests/test_ui_smoke.py` 会启动真实界面并校验窗口、导航与覆盖层行为，守住这些
@@ -191,16 +211,24 @@ LRC 解析（补零、offset、一行多标签、翻译配对、当前行二分�
 （`Cannot call method 'showWindow' of null`）；歌单详情页左上角「返回」点了没反应
 （信号发了但没人接）；展开播放页与歌单详情覆盖层的空白处会把鼠标事件放过去、
 点到底下的导航栏；隐藏歌词后封面区赖在左边不居中；歌词写死靠左；百科标签页切过去
-歌词还盖在原地、或者没打开百科页就去联网取数；点歌手名 / 专辑名
-进不去对应页面（或者反过来，被整行的「播放」抢走点击；再或者层级放错，
-打开了却盖在底下看不见）；漫游刚点开始就自己关掉（换队列时「当前曲目」还是上一首，
-被自己的交棒判断误伤）。**它只在本地跑**，不进 CI：
+歌词还盖在原地、或者没打开百科页就去联网取数；本地音乐页又退回成手输路径的输入框；
+点歌手名 / 专辑名进不去对应页面（或者反过来，被整行的「播放」抢走点击；
+再或者层级放错，打开了却盖在底下看不见）；漫游刚点开始就自己关掉（换队列时
+「当前曲目」还是上一首，被自己的交棒判断误伤）。**它只在本地跑**，不进 CI：
 
 ```bash
 python tests/test_ui_smoke.py
 # 无显示环境（Linux CI / 服务器）：
 xvfb-run -a python tests/test_ui_smoke.py
+# Windows 上桌面会话状态不对时（远程 / 无人值守）：
+$env:QT_QPA_PLATFORM="offscreen"; python tests/test_ui_smoke.py
 ```
+
+> 桌面会话被挡住 / 无人值守时，窗口拿不到绘制帧，**QML 的动画就不推进**
+> （`opacity` 一直停在 0），于是「面板没展开」「点击不生效」这类假故障会成片出现，
+> 甚至卡在事件循环里 —— 代码没变，换个时间跑又全绿。遇到这种情况先用
+> `QT_QPA_PLATFORM=offscreen` 复核一遍；它顺带把屏幕报成 800×800，
+> 正好也压一遍小窗口下的布局。
 
 CI 里跑它需要在 ubuntu runner 上装一整套 Qt 的 X / OpenGL / 音频系统库
 （`libegl1`、`libva2`、`libpulse0`、gstreamer 等，装一次好几分钟），
@@ -249,6 +277,11 @@ python tools/audit_bundle.py dist/FusionMusicPlayer     # 校验依赖是否齐�
 * PySide6 的 hook 会把整个 Qt 目录收进来（含 195 MB 的 `Qt6WebEngineCore.dll`），
   必须在 `EXE/COLLECT` 之前过滤 `Analysis.binaries`；但 **`Qt6ShaderTools.dll`
   不能删** —— FluentUI 的 `FluClip` 经由 `Qt5Compat.GraphicalEffects` 依赖它。
+
+另外，本地音乐页的系统文件夹选择器用的是 `QtQuick.Dialogs`（QML 里 import 的，
+Python 侧看不到），打包时 `Qt6QuickDialogs2*.dll` 与 `qml/QtQuick/Dialogs/`
+都要留着 —— 它们不在 `DROP_QT_DLLS` / `DROP_DATA_PARTS` 里，默认会被收进来，
+别手滑加进去。
 
 `tools/audit_bundle.py` 会遍历产物里每个 DLL/PYD，解析 PE 导入表并报告
 「既没打包、也不属于 Windows 系统」的依赖。上面那条 ShaderTools 就是这么
@@ -335,8 +368,8 @@ data/
 ├── playlists.json       歌单
 ├── favorites.json       我喜欢的音乐
 ├── history.json         播放历史
-├── local.json           本地曲库索引
-├── cache/               封面 / 歌词 / 音频缓存
+├── local.json           本地曲库索引（含在线匹配到的封面与曲目身份）
+├── cache/               封面 / 歌词 / 音频缓存（内嵌封面也落在这里）
 └── logs/fusion.log      运行日志（滚动，2MB × 4）
 ```
 
@@ -390,13 +423,14 @@ FusionMusicPlayer/
 │   │   ├── resolver.py          地址解析 / 校验 / 跨源兜底
 │   │   ├── lyrics.py            LRC 解析（含翻译 / 罗马音配对）
 │   │   ├── roam.py              漫游的续歌时机与理由清洗（纯逻辑）
+│   │   ├── localmatch.py        本地曲目的在线匹配规则（纯逻辑）
 │   │   ├── store.py             歌单 / 收藏 / 历史 / 本地曲库
 │   │   ├── cache.py             封面 / 歌词 / 音频缓存与 LRU 清理
 │   │   └── account.py           网易云登录、凭据持久化与续期
 │   ├── bridges/                 QML ↔ Python 控制器
 │   │   ├── app.py               导航 / 通知 / 窗口状态
 │   │   ├── search.py            多音源搜索（含搜索置顶的歌手 / 歌单卡片）
-│   │   ├── library.py           歌单 / 收藏 / 本地扫描
+│   │   ├── library.py           歌单 / 收藏 / 本地扫描与在线匹配
 │   │   ├── discover.py          推荐 / 排行榜 / 歌单详情
 │   │   ├── detail.py            详情页基类（歌手页 / 专辑页共用）
 │   │   ├── artist.py            歌手页（按 id 或名字打开）
@@ -456,6 +490,11 @@ FMCL 的音乐模块是 `customtkinter` + `pygame.mixer`，UI 约 4300 行不可
 * 歌曲百科是网易云独有的数据。其它音源的曲目只能按「歌名 + 歌手」找网易云里的
   同款歌，**核对不过就没有百科可显示**（翻唱、时长差 15 秒以上、网易云没收录都算），
   此时百科页显示空态而不是弹提示 —— 不该因为查不到资料打断听歌。
+* 本地音乐的在线匹配是**按「歌名 + 歌手」去网易云搜**，只写进 `data/local.json`
+  与封面缓存，**不改动音乐文件本身**（不写回标签、不生成 `.lrc` 边车文件）。
+  想让其它播放器也看到歌词，得自己导出成 `.lrc`。
+* 曲库很大时（几千首）首次扫描会在「匹配封面与歌词」这一段慢下来：每首一首歌
+  一次搜索、并发 4。可以在「设置 → 本地音乐」关掉，重扫时会沿用上次结果。
 * `weapi` 域名在本机环境常被风控拦截返回空响应，因此所有补充接口都走 eapi 通道
   （与 FMCL 注释中的观察一致）。
 * 播放版权内容依赖第三方平台的公开接口，稳定性不受本项目控制。

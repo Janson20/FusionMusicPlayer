@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs
 import QtQuick.Layouts
 import FluentUI
 import ".."
@@ -67,14 +68,15 @@ Item {
                     FluText {
                         Layout.alignment: Qt.AlignVCenter
                         visible: library.scanning
-                        text: "扫描中 " + library.scanProgress + "%"
+                        text: (library.scanPhase === "" ? "扫描中" : library.scanPhase)
+                              + " " + library.scanDetail
                         font.pixelSize: 11
                         color: Theme.accent
                     }
 
                     FluButton {
                         text: "添加文件夹"
-                        onClicked: folderDialog.openWith("")
+                        onClicked: folderDialog.open()
                     }
 
                     FluFilledButton {
@@ -138,7 +140,7 @@ Item {
                 FluText {
                     Layout.fillWidth: true
                     visible: library.localFolders.length === 0
-                    text: "还没有添加文件夹。点击「添加文件夹」把本地音乐目录加进来，程序会读取标签与时长。"
+                    text: "还没有添加文件夹。点「添加文件夹」用系统文件夹选择器挑一个目录，程序会递归扫描里面的音频文件，读取标签、内嵌封面与时长，并按歌名与歌手在线匹配封面和歌词。"
                     font.pixelSize: 11
                     color: Theme.textTertiary
                     wrapMode: Text.WordWrap
@@ -182,7 +184,7 @@ Item {
                     emptyTitle: "本地曲库为空"
                     emptyDescription: "添加一个音乐文件夹后点击「重新扫描」"
                     emptyActionText: "添加文件夹"
-                    onEmptyActionTriggered: folderDialog.openWith("")
+                    onEmptyActionTriggered: folderDialog.open()
                     onTrackActivated: function (index) {
                         player.playTrackInList(library.localModel.allItems(), index)
                     }
@@ -195,16 +197,14 @@ Item {
         }
     }
 
-    InputDialog {
+    // 系统文件夹选择器。以前这里是个「粘贴文件夹的完整路径」的输入框 ——
+    // 让用户手打 `D:\Music` 既容易打错，也没法浏览。
+    FolderDialog {
         id: folderDialog
-        title: "添加音乐文件夹"
-        label: "粘贴文件夹的完整路径"
-        placeholder: "例如 D:\\Music"
-        hint: "程序会递归扫描该目录下的 mp3 / flac / m4a / wav / ogg 等音频文件。"
-        onAccepted: function (value) {
-            if (value === "")
-                return
-            library.addLocalFolder(value)
-        }
+        objectName: "localFolderDialog"
+        title: "选择音乐文件夹"
+        acceptLabel: "添加"
+        rejectLabel: "取消"
+        onAccepted: library.addLocalFolder(selectedFolder.toString())
     }
 }

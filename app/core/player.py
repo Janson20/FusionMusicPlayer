@@ -616,12 +616,26 @@ class PlayerEngine(QObject):
             translation = ""
             roma = ""
             if track.is_local and track.path:
+                # 本地文件优先读同目录的同名 .lrc
                 raw = _read_local_lrc(track.path) or ""
-            if not raw:
-                raw = get_lyric(track.to_music_info(), track.source) or ""
-            if raw and track.source == "wy":
+
+            # 去哪儿取歌词：在线曲目用自己的身份；本地文件用**扫描时在线匹配到的**
+            # 那个身份（见 app/core/localmatch.py）。本地曲目没匹配上就没有在线身份，
+            # 这时 source_id 会是 "local" 这种取不到歌词的音源，干脆不请求。
+            source_id = track.source
+            song_id = str(track.songmid or "")
+            if track.is_local:
+                source_id = str(track.match_source or "")
+                song_id = str(track.match_songmid or "")
+
+            if not raw and source_id and song_id:
+                info = track.to_music_info()
+                info.source = source_id
+                info.songmid = song_id
+                raw = get_lyric(info, source_id) or ""
+            if raw and source_id == "wy":
                 translation, roma = fetch_translation(
-                    track.songmid,
+                    song_id,
                     want_translation=bool(self._config.get("lyrics.show_translation", True)),
                     want_roma=bool(self._config.get("lyrics.show_romaji", False)),
                 )

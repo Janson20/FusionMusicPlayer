@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import os
 import threading
@@ -9,6 +10,7 @@ from typing import Dict, List
 
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
+from ..core import localmatch
 from ..core.models import Track, TrackListModel
 from ..core.resolver import AUDIO_EXTENSIONS, resolve_local_metadata, scan_local_folder
 from ..core.store import (
@@ -20,6 +22,40 @@ from ..core.store import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_folder(value: str) -> str:
+    """把「文件夹选择器给的 ``file://`` URL」或「手输的路径」统一成绝对路径。
+
+    QML 的 ``FolderDialog.selectedFolder`` 是 ``url`` 类型，``toString()`` 出来是
+    ``file:///D:/Music``（中文与空格还会被百分号转义），直接当路径用会 ``isdir`` 失败。
+    手输路径仍然兼容 —— 老配置文件里存的就是纯路径，也还可能有人从别处粘一个进来。
+    """
+    text = str(value or "").strip().strip('"').strip()
+    if not text:
+        return ""
+    if text.lower().startswith("file:"):
+        try:
+            from PySide6.QtCore import QUrl
+
+            local = QUrl(text).toLocalFile()
+            text = local or text
+        except Exception as e:  # pragma: no cover - 依赖 Qt
+            logger.debug("解析文件 URL 失败: %s", e)
+    try:
+        return os.path.abspath(os.path.expanduser(text))
+    except Exception:
+        return text
+
+
+def _match_one(netease, track: Track) -> bool:
+    """工作线程里跑的一次匹配（网易云搜索 + 歌名/时长核对）。"""
+    try:
+        info = netease.search_song_match(track.name, track.singer, track.interval)
+    except Exception as e:
+        logger.debug("在线匹配失败「%s」: %s", track.name, e)
+        return False
+    return localmatch.apply_match(track, info)
 
 
 class _Emitter(QObject):
@@ -63,6 +99,7 @@ class LibraryController(QObject):
         self._scanning = False
         self._scan_total = 0
         self._scan_done = 0
+        self._scan_phase = ""
 
         # 网易云歌单（内存态，不落盘）
         self._remote: List[Dict] = []
@@ -168,6 +205,18 @@ class LibraryController(QObject):
         if not self._scan_total:
             return 0
         return int(self._scan_done * 100 / self._scan_total)
+
+    @Property(str, notify=scanningChanged)
+    def scanPhase(self) -> str:  # noqa: N802
+        """当前扫描阶段（``扫描文件`` / ``匹配封面与歌词``），进度条按阶段各自算。"""
+        return self._scan_phase
+
+    @Property(str, notify=scanningChanged)
+    def scanDetail(self) -> str:  # noqa: N802
+        """``已处理/总数``，扫描阶段的计数比百分比更有信息量。"""
+        if not self._scan_total:
+            return ""
+        return f"{self._scan_done}/{self._scan_total}"
 
     @Property("QVariantList", constant=True)
     def sortModes(self):  # noqa: N802
@@ -474,7 +523,7 @@ class LibraryController(QObject):
 
     @Slot(str)
     def addLocalFolder(self, folder: str) -> None:
-        folder = (folder or "").strip().strip('"')
+        folder = normalize_folder(folder)
         if not folder or not os.path.isdir(folder):
             self.errorOccurred.emit("请选择有效的文件夹")
             return
@@ -508,6 +557,7 @@ class LibraryController(QObject):
         self._scanning = True
         self._scan_total = 0
         self._scan_done = 0
+        self._scan_phase = localmatch.PHASE_SCAN
         self.scanningChanged.emit()
         exts = self._config.get("local.extensions", None)
         threading.Thread(
@@ -529,30 +579,62 @@ class LibraryController(QObject):
                     unique.append(f)
             unique.sort(key=lambda p: name_sort_key(os.path.basename(p)))
 
+            # 上次匹配过的结果：文件没变就直接沿用，重扫不必把几千次搜索再打一遍
+            previous = localmatch.reuse_matches(self._library.local_tracks())
+
             tracks: List[Track] = []
             for i, path in enumerate(unique):
                 track = resolve_local_metadata(path)
                 if track is not None:
+                    localmatch.adopt_match(track, previous.get(localmatch.key_for_path(path)))
                     tracks.append(track)
-                self._emitter.scanProgress.emit((i + 1, len(unique)))
+                self._emitter.scanProgress.emit((i + 1, len(unique), localmatch.PHASE_SCAN))
+
+            if bool(self._config.get("local.match_online", True)):
+                self._match_online(tracks)
             self._emitter.scanDone.emit(tracks)
         except Exception as e:
             logger.exception("扫描本地音乐失败")
             self._emitter.scanDone.emit(e)
 
+    def _match_online(self, tracks: List[Track]) -> None:
+        """给还缺封面 / 歌词的曲目在线匹配（并发 4，逐个回报进度）。
+
+        只做「搜一次」这一个请求 —— 歌词留到播放时按匹配到的身份去取，
+        不然扫一次库就是几千个歌词请求（见 :mod:`app.core.localmatch`）。
+        """
+        from ..sources import netease
+
+        todo = localmatch.pending_matches(tracks)
+        total = len(todo)
+        self._emitter.scanProgress.emit((0, max(total, 1), localmatch.PHASE_MATCH))
+        if not total:
+            return
+
+        done = 0
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=localmatch.MATCH_WORKERS
+        ) as pool:
+            futures = [pool.submit(_match_one, netease, track) for track in todo]
+            for _future in concurrent.futures.as_completed(futures):
+                done += 1
+                self._emitter.scanProgress.emit((done, total, localmatch.PHASE_MATCH))
+
     @Slot(object)
     def _on_scan_progress(self, payload) -> None:
         try:
-            done, total = payload
-            self._scan_done = int(done)
-            self._scan_total = int(total)
-            self.scanningChanged.emit()
-        except Exception:
-            pass
+            done, total, phase = payload
+        except (TypeError, ValueError):
+            return
+        self._scan_done = int(done)
+        self._scan_total = int(total)
+        self._scan_phase = str(phase or "")
+        self.scanningChanged.emit()
 
     @Slot(object)
     def _on_scan_done(self, payload) -> None:
         self._scanning = False
+        self._scan_phase = ""
         self.scanningChanged.emit()
         if isinstance(payload, Exception):
             self.errorOccurred.emit(f"扫描失败：{payload}")
@@ -562,4 +644,10 @@ class LibraryController(QObject):
         self._library.save()
         self.localChanged.emit()
         self._on_library_event("local")
-        self.message.emit(f"扫描完成，共 {len(tracks)} 首本地歌曲")
+        matched = localmatch.matched_count(tracks)
+        if matched:
+            self.message.emit(
+                f"扫描完成，共 {len(tracks)} 首本地歌曲，{matched} 首匹配到封面与歌词"
+            )
+        else:
+            self.message.emit(f"扫描完成，共 {len(tracks)} 首本地歌曲")

@@ -108,6 +108,41 @@ def cached_cover(url: str) -> Optional[str]:
 
     return QUrl.fromLocalFile(p).toString()
 
+#: 内嵌封面的 MIME 白名单（只认 QML 直接画得出来的那几种）
+_COVER_SUFFIX = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/bmp": ".bmp",
+    "image/gif": ".gif",
+}
+
+def store_cover_bytes(key_source: str, data: bytes, mime: str = "") -> Optional[str]:
+    """把**从本地文件标签里读出来的封面**写进封面缓存，返回 ``file://`` URL。
+
+    缓存键取自文件路径而不是 URL —— 同一个文件反复扫描不会堆出好几份；
+    内容变了（长度不一样）就覆盖重写。MIME 认不出来时按 JPEG 存，
+    QML 的 ``Image`` 是看文件头解码的，后缀只影响观感。
+    """
+    if not data:
+        return None
+    suffix = _COVER_SUFFIX.get(str(mime or "").strip().lower(), ".jpg")
+    dest = paths.cover_cache_dir() / f"local-{key_for(str(key_source))}{suffix}"
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if not dest.exists() or dest.stat().st_size != len(data):
+            tmp = dest.with_name(dest.name + ".part")
+            tmp.write_bytes(data)
+            os.replace(tmp, dest)
+    except OSError as e:
+        logger.debug("写入内嵌封面失败 %s: %s", key_source, e)
+        return None
+
+    from PySide6.QtCore import QUrl
+
+    return QUrl.fromLocalFile(str(dest)).toString()
+
 def cached_lyric(url: str) -> Optional[str]:
     return fetch_cached(url, "lyric", suffix=".lrc")
 

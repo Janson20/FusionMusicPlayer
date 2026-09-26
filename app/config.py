@@ -76,6 +76,9 @@ DEFAULTS: Dict[str, Any] = {
         "folders": [],
         "extensions": [".mp3", ".flac", ".m4a", ".aac", ".wav", ".ogg", ".opus", ".wma"],
         "scan_on_start": False,
+        # 扫描时按「歌名 + 歌手」在线匹配封面与歌词（只写曲库索引，不改音乐文件）。
+        # 首次扫描大曲库会慢一些，重扫会沿用上次结果，不再重复搜索。
+        "match_online": True,
     },
     # ── 窗口 ────────────────────────────────────────────────
     "window": {

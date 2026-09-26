@@ -11,10 +11,13 @@ import "../components"
 FluWindow {
     id: window
 
-    width: 720
-    height: 520
-    minimumWidth: 700
-    minimumHeight: 500
+    // 窗口是固定尺寸的，但屏幕比它还小时照样得让位，否则确认按钮会被顶出屏幕
+    readonly property var fitted: app.fitWindow(720, 520, 700, 480)
+
+    width: fitted.width
+    height: fitted.height
+    minimumWidth: Math.min(700, fitted.width)
+    minimumHeight: Math.min(480, fitted.height)
     title: "登录网易云音乐"
     visible: false
     // 关闭时只隐藏、不销毁（原因同 SettingsWindow.qml）

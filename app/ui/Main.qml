@@ -26,10 +26,14 @@ FluWindow {
     // 尺寸不用属性绑定：FluWindow 的无边框助手会在派生组件的绑定生效前后
     // 把窗口收敛到 minimumWidth/minimumHeight，绑定值会被吞掉。
     // 统一在 Component.onCompleted 里显式设置一次最可靠。
-    width: 1180
-    height: 760
-    minimumWidth: 940
-    minimumHeight: 620
+    //
+    // 但**下限必须绑上**：低分辨率下（1366×768 被任务栏吃掉一截，或者开了 125%
+    // 缩放）窗口若还按 940×620 起步，底部播放栏会被顶到屏幕外面、点都点不到。
+    // 所以初始尺寸与最小尺寸都交给 app 按屏幕可用区域算（见 bridges/app.py）。
+    width: app.initialWidth()
+    height: app.initialHeight()
+    minimumWidth: app.minimumWidth()
+    minimumHeight: app.minimumHeight()
     title: "Fusion Music Player"
     visible: true
     autoMaximize: app.restoreMaximized()
