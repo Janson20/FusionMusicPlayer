@@ -136,6 +136,8 @@ class UiProbe(Application):
         self.pump(600)
         check("设置窗口可打开", SETTINGS_TITLE in self.visible(), f"{self.visible()}")
 
+        self.check_account_section()
+
         w = self.find(SETTINGS_TITLE)
         if w:
             w.close()
@@ -171,6 +173,46 @@ class UiProbe(Application):
         check("子窗口关闭后只剩主窗口", self.visible() == [MAIN_TITLE], f"{self.visible()}")
 
         self.step_detail()
+
+    # ── 账号分区（凭据存储 / 便携模式）────────────────────────
+    def check_account_section(self):
+        """设置页的账号分区要能算出「密钥在本机解得开吗」。
+
+        这里守的是一类很容易犯、又很难在别处暴露的错：``app/security`` 的
+        ``__init__.py`` 把 ``vault`` 导成了**单例实例**，所以
+        ``vault.dpapi_available()`` 这种「模块级函数当方法调」会在 QML 求值
+        ``account.portableHint`` 时抛 AttributeError —— 界面那边只会报一行
+        QML 运行时错误，靠 ``_finish()`` 那条检查才拦得住。
+        """
+        win = self.find(SETTINGS_TITLE)
+        if win is None:
+            check("账号分区可检查", False, "设置窗口不在")
+            return
+        win.setProperty("section", 3)
+        self.pump(500)
+
+        hint = self.eval_value("account.portableHint", None)
+        check("便携模式说明能算出来", isinstance(hint, str) and hint != "", repr(hint))
+        check("密钥可用性问得出来",
+              self.eval_value("account.keyUsable", None) is not None)
+        check("能问出当前平台有没有 DPAPI",
+              self.eval_value("account.dpapiAvailable", None) is not None)
+
+        switch = win.findChild(QObject, "portableModeSwitch")
+        check("账号分区有便携模式开关", switch is not None)
+        if switch is not None:
+            check("开关跟着实际状态",
+                  bool(switch.property("checked")) == bool(self.account.portableMode),
+                  f"checked={switch.property('checked')} "
+                  f"portableMode={self.account.portableMode}")
+
+        card = win.findChild(QObject, "keyProblemCard")
+        check("账号分区有「密钥解不开」提示卡片", card is not None)
+        if card is not None:
+            # 这条只在真的解不开时才显形（正常机器上不显示）
+            check("密钥可用时提示卡片是隐藏的",
+                  bool(card.property("visible")) != bool(self.account.keyUsable),
+                  f"visible={card.property('visible')} keyUsable={self.account.keyUsable}")
 
     # ── 歌单详情页 ──────────────────────────────────────────
     def step_detail(self):

@@ -444,6 +444,71 @@ FluWindow {
                     }
 
                     SectionHeader { Layout.fillWidth: true; title: "凭据存储" }
+
+                    // 密钥解不开：数据目录大概是从别的电脑拷过来的。这里给一条出路。
+                    Rectangle {
+                        objectName: "keyProblemCard"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: keyProblem.implicitHeight + 24
+                        visible: !account.keyUsable
+                        radius: Theme.radius
+                        color: Theme.dark
+                            ? Qt.rgba(0.97, 0.44, 0.44, 0.12)
+                            : Qt.rgba(0.86, 0.15, 0.15, 0.06)
+                        border.width: 1
+                        border.color: Theme.danger
+
+                        ColumnLayout {
+                            id: keyProblem
+                            anchors {
+                                left: parent.left
+                                right: parent.right
+                                top: parent.top
+                                margins: 12
+                            }
+                            spacing: 8
+
+                            FluText {
+                                Layout.fillWidth: true
+                                text: "凭据密钥在本机解不开"
+                                font.pixelSize: 13
+                                font.weight: Font.DemiBold
+                                color: Theme.danger
+                            }
+                            FluText {
+                                Layout.fillWidth: true
+                                text: "主密钥由另一台电脑（或另一个 Windows 用户）的 DPAPI 保护，本机解不开，"
+                                      + "已保存的登录状态没法恢复。开启下面的「便携模式」再重新登录一次，"
+                                      + "以后把整个程序目录拷到哪台电脑都能保持登录。"
+                                font.pixelSize: 11
+                                color: Theme.textSecondary
+                                wrapMode: Text.WordWrap
+                            }
+                            FluButton {
+                                objectName: "rebuildKeyButton"
+                                text: "重建密钥并重新登录"
+                                onClicked: account.rebuildKey()
+                            }
+                        }
+                    }
+
+                    SettingSwitch {
+                        objectName: "portableModeSwitch"
+                        label: "便携模式（换台电脑也保持登录）"
+                        description: "主密钥不再由本机 DPAPI 绑定：整个程序目录拷到别的电脑或别的 Windows 用户下，账号照样是登录状态。关掉后主密钥只在本机解得开 —— 更安全，但换电脑要重新登录。"
+                        checked: account.portableMode
+                        enabledControl: account.keyUsable
+                        onToggled: function (value) { account.setPortableMode(value) }
+                    }
+                    FluText {
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 2
+                        text: account.portableHint
+                        font.pixelSize: 11
+                        color: account.keyUsable ? Theme.textTertiary : Theme.danger
+                        wrapMode: Text.WordWrap
+                    }
+
                     SettingRow {
                         label: "凭据文件"
                         value: account.credentialPath

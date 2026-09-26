@@ -74,6 +74,222 @@ def test_vault_missing_file():
 
 
 # ──────────────────────────────────────────────────────────────
+# 便携模式（凭据能不能跟着程序目录换台电脑）
+# ──────────────────────────────────────────────────────────────
+
+
+class _PortableFixture:
+    """给便携模式用例准备一个独立的数据目录 + 一份凭据。
+
+    ``paths.set_data_dir`` 与密钥偏好都是模块级的全局量，退出时都要还原，
+    否则会漏到别的用例里。
+    """
+
+    CREDS = {
+        "provider": "netease",
+        "cookies": "MUSIC_U=secret; __csrf=x",
+        "user_id": 42,
+        "nickname": "测试用户",
+    }
+
+    def __enter__(self):
+        import sys
+
+        from app import paths
+
+        self.paths = paths
+        self.module = sys.modules["app.security.vault"]
+        self.previous_dir = paths._DATA_DIR_OVERRIDE  # noqa: SLF001 - 只为还原
+        self.previous_pref = self.module.portable_preference()
+        self.root = Path(tempfile.mkdtemp(prefix="fusion_portable_"))
+        paths.set_data_dir(self.root / "data")
+        self._real_protect = self.module._dpapi_protect  # noqa: SLF001
+        self._real_unprotect = self.module._dpapi_unprotect  # noqa: SLF001
+        return self
+
+    def __exit__(self, *exc):
+        self.module._dpapi_protect = self._real_protect  # noqa: SLF001
+        self.module._dpapi_unprotect = self._real_unprotect  # noqa: SLF001
+        self.module.set_portable_preference(self.previous_pref)
+        self.paths.set_data_dir(self.previous_dir)
+        return False
+
+    def vault(self):
+        return CredentialVault(self.root / "data" / "credentials.enc")
+
+    def key_bytes(self) -> bytes:
+        return self.paths.key_file().read_bytes()
+
+    def break_dpapi(self) -> None:
+        """模拟「换了台电脑 / 换了个 Windows 用户」：DPAPI 既包不上也解不开。"""
+        self.module._dpapi_protect = lambda data: None  # noqa: SLF001
+        self.module._dpapi_unprotect = lambda data: None  # noqa: SLF001
+
+
+def test_vault_portable_switch_keeps_the_key():
+    """便携模式只换**密钥文件的存法**，不换密钥本身 —— 所以开关可以随时拨，
+    已经登录的凭据照样解得开，不需要重新登录。"""
+    from app.security.vault import PORTABLE_MAGIC
+
+    with _PortableFixture() as fx:
+        v = fx.vault()
+        assert v.save(fx.CREDS) is True
+        assert v.key_usable() is True
+        assert v.portable() is False
+        fingerprint = v.key_fingerprint()
+
+        # 打开：文件头变成 PORT + 裸密钥
+        assert v.set_portable(True) == "portable"
+        assert fx.key_bytes()[:4] == PORTABLE_MAGIC
+        assert len(fx.key_bytes()) == 4 + 32
+        assert v.portable() is True and v.key_usable() is True
+        # 密钥没变（指纹一致），旧凭据照样解得开
+        assert v.key_fingerprint() == fingerprint
+        assert v.load() == fx.CREDS
+
+        # 关掉：重新由本机 DPAPI 包裹，密钥依然是同一个
+        expected = "dpapi" if fx.module.dpapi_available() else "keyfile"
+        assert v.set_portable(False) == expected
+        assert v.key_fingerprint() == fingerprint
+        assert v.load() == fx.CREDS
+
+
+def test_vault_portable_survives_machine_move():
+    """换台电脑：便携模式的凭据解得开，绑本机的解不开（这正是那个开关的意义）。"""
+    from app.security.vault import PORTABLE_MAGIC
+
+    with _PortableFixture() as fx:
+        v = fx.vault()
+        assert v.save(fx.CREDS) is True
+        assert v.set_portable(True) == "portable"
+        assert fx.key_bytes()[:4] == PORTABLE_MAGIC
+
+        fx.break_dpapi()
+        moved = fx.vault()          # 相当于在新机器上重新打开这个数据目录
+        assert moved.portable() is True
+        assert moved.key_usable() is True
+        assert moved.load() == fx.CREDS
+
+
+def test_vault_machine_bound_key_fails_loudly():
+    """对照组：没开便携模式、密钥由别的机器保护时，必须报错而不是悄悄重建。
+
+    报错信息里要点名那个开关，否则用户只能靠「手动删文件」自救。
+    """
+    from app.security.vault import VaultError
+
+    with _PortableFixture() as fx:
+        v = fx.vault()
+        assert v.save(fx.CREDS) is True
+        if not fx.module.dpapi_available():
+            # 非 Windows 平台存的就是裸密钥，压根没有「绑本机」这回事
+            assert v.portable() is True and v.key_usable() is True
+            return
+
+        assert v.set_portable(False) == "dpapi"
+        assert fx.key_bytes()[:4] == b"DPA1"
+        fx.break_dpapi()
+
+        moved = fx.vault()
+        assert moved.portable() is False
+        assert moved.key_usable() is False
+        assert moved.key_source() == "不可用"
+        try:
+            moved.load()
+            raise AssertionError("绑在本机的密钥不该能在别处解开")
+        except VaultError as e:
+            assert "便携模式" in str(e)
+        # 解不开就换不了存法：绝不能悄悄把密钥换掉（旧密钥可能还能在原机器上救回来）
+        try:
+            moved.set_portable(True)
+            raise AssertionError("解不开的密钥不该被静默替换")
+        except VaultError:
+            pass
+        assert fx.key_bytes()[:4] == b"DPA1"    # 文件没被动过
+
+
+def test_vault_rebuild_key():
+    """密钥解不开时的出路：重建密钥（旧密钥留备份、失效凭据清掉、之后能重新登录）。"""
+    from app.security.vault import VaultError
+
+    with _PortableFixture() as fx:
+        v = fx.vault()
+        assert v.save(fx.CREDS) is True
+
+        # 伪造成「从别的 Windows 用户那儿拷过来的 DPAPI 密钥」
+        fx.paths.key_file().write_bytes(b"DPA1" + b"\x00" * 60)
+        moved = fx.vault()
+        assert moved.key_usable() is False
+        try:
+            moved.load()
+            raise AssertionError("不该解开")
+        except VaultError:
+            pass
+
+        # 重建：按偏好（这里先打开便携模式）重新生成密钥
+        fx.module.set_portable_preference(True)
+        assert moved.rebuild_key() == "portable"
+        assert moved.key_usable() is True and moved.portable() is True
+        # 旧密钥不是删掉而是改名留档：回到原来那台机器还能救回来
+        backup = fx.paths.key_file().with_name("master.key.unreadable")
+        assert backup.exists() and backup.read_bytes()[:4] == b"DPA1"
+        # 拿旧密钥加密的凭据已经作废，留着只会每次启动都报一次解密失败
+        assert (fx.root / "data" / "credentials.enc").exists() is False
+        # 现在能正常保存了
+        assert moved.save(fx.CREDS) is True
+        assert moved.load() == fx.CREDS
+
+
+def test_vault_portable_preference_when_key_missing():
+    """密钥还没生成时，portable() 按**偏好**回答 —— 否则用户还没登录过的话，
+    设置页会把刚打开的开关显示成关着的。"""
+    with _PortableFixture() as fx:
+        assert fx.paths.key_file().exists() is False
+        v = fx.vault()
+        fx.module.set_portable_preference(True)
+        assert v.portable() is True
+        assert v.key_usable() is True          # 还没生成不算「不可用」
+        # 开关本身不该顺手把密钥造出来（保持数据目录干净）
+        assert fx.paths.key_file().exists() is False
+
+        fx.module.set_portable_preference(False)
+        assert v.portable() is False
+
+
+def test_vault_path_follows_data_dir():
+    """凭据文件必须跟着数据目录走。
+
+    ``--data-dir`` / ``FUSION_MUSIC_HOME`` 改的是数据目录，而模块级单例是在
+    ``import`` 时就建好的：早先把路径写死成实例属性，于是凭据留在老位置、
+    主密钥跟着新目录走，两者分了家 ——「拷贝目录带走登录状态」就成了空话。
+    """
+    from app import paths
+    from app.security.vault import CredentialVault
+
+    previous = paths._DATA_DIR_OVERRIDE  # noqa: SLF001 - 只为还原
+    root = Path(tempfile.mkdtemp(prefix="fusion_datadir_"))
+    try:
+        paths.set_data_dir(root)
+        # 注意：set_data_dir 会 resolve（Windows 上临时目录可能带 8.3 短名），
+        # 所以拿 paths.data_dir() 比，不要拿传进去的 root 比
+        v = CredentialVault()          # 不传路径 = 用默认（数据目录）
+        assert v.path == paths.data_dir() / "credentials.enc"
+        # 密钥与凭据必须在同一个数据目录下
+        assert v.path.parent == paths.key_file().parent.parent
+        assert v.save({"provider": "netease", "cookies": "x"}) is True
+        assert v.path.exists()
+
+        # 目录再改，同一个实例要跟着换
+        first = v.path
+        paths.set_data_dir(root / "other")
+        assert v.path == paths.data_dir() / "credentials.enc"
+        assert v.path != first
+        assert v.load() is None
+    finally:
+        paths.set_data_dir(previous)
+
+
+# ──────────────────────────────────────────────────────────────
 # 歌词
 # ──────────────────────────────────────────────────────────────
 

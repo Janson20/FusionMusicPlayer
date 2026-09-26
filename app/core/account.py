@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import threading
 import time
 from typing import Any, Dict, Optional
@@ -26,7 +27,12 @@ from PySide6.QtCore import QObject, Property, Signal, Slot
 from .. import paths
 from ..paths import APP_VERSION
 from ..security import vault
-from ..security.vault import VaultError
+from ..security.vault import (
+    MASTER_PASSWORD_ENV,
+    VaultError,
+    dpapi_available,
+    set_portable_preference,
+)
 from ..sources import (
     wy_apply_cookie,
     wy_clear_cookie,
@@ -215,6 +221,101 @@ class AccountManager(QObject):
     def keySource(self) -> str:  # noqa: N802
         return vault.key_source()
 
+    # ── 便携模式（凭据能不能换台电脑解开）──────────────────
+
+    @Property(bool, notify=credentialsChanged)
+    def portableMode(self) -> bool:  # noqa: N802
+        """凭据是否与机器无关：换台电脑 / 换个 Windows 用户照样保持登录。"""
+        try:
+            return vault.portable()
+        except Exception:
+            return False
+
+    @Property(bool, constant=True)
+    def dpapiAvailable(self) -> bool:  # noqa: N802
+        """当前平台有没有 DPAPI。没有的话密钥只能裸存，便携模式其实是常开的。"""
+        # 注意：``vault`` 是包导出的**单例**（见 security/__init__.py），
+        # 模块级函数得单独 import，不能写成 vault.dpapi_available()
+        return dpapi_available()
+
+    @Property(bool, notify=credentialsChanged)
+    def keyUsable(self) -> bool:  # noqa: N802
+        """主密钥在本机解得开吗。``False`` = 数据目录是从别的机器拷过来的。"""
+        return vault.key_usable()
+
+    @Property(str, notify=credentialsChanged)
+    def portableHint(self) -> str:  # noqa: N802
+        """设置页里那行随状态变的小字。"""
+        if os.environ.get(MASTER_PASSWORD_ENV):
+            return "当前由环境变量 FUSION_MUSIC_MASTER_PASSWORD 派生密钥，本来就与机器无关。"
+        if not self.dpapiAvailable:
+            return "当前平台没有 DPAPI，密钥只能以原始字节保存 —— 便携模式是常开的。"
+        if not self.keyUsable:
+            return "主密钥由另一台机器 / 另一个 Windows 用户保护，本机解不开，已保存的登录状态无法恢复。"
+        if self.portableMode:
+            return "主密钥不以本机绑定：整个程序目录拷到别的电脑也能保持登录。"
+        return "主密钥由本机 DPAPI 保护：拷到别的电脑就解不开，需要重新登录。"
+
+    @Slot(bool)
+    def setPortableMode(self, enabled: bool) -> None:  # noqa: N802
+        """切换便携模式（只换密钥的存法，不动密钥本身，不需要重新登录）。"""
+        enabled = bool(enabled)
+        self._config.set("account.portable", enabled)
+        try:
+            source = vault.set_portable(enabled)
+        except VaultError as e:
+            # 密钥解不开：开关状态回到事实，并把出路告诉用户
+            self._config.set("account.portable", vault.portable())
+            self.credentialsChanged.emit()
+            self.errorOccurred.emit(str(e))
+            return
+
+        self.credentialsChanged.emit()
+        if enabled and source == "portable":
+            self.message.emit("便携模式已开启：整个程序目录拷到别的电脑也能保持登录")
+        elif enabled:
+            self.message.emit("已记下便携模式：本平台的密钥本来就与机器无关")
+        elif source == "dpapi":
+            self.message.emit("便携模式已关闭：主密钥改由本机 DPAPI 保护，换电脑需要重新登录")
+        else:
+            self.errorOccurred.emit(
+                "当前平台没有 DPAPI，密钥只能以原始字节保存，关不掉便携模式"
+            )
+
+    @Slot()
+    def rebuildKey(self) -> None:  # noqa: N802
+        """密钥解不开时的出路：重建密钥（旧凭据作废，需要重新登录一次）。
+
+        旧密钥文件会改名为 ``master.key.unreadable`` 留着，不是静默删除。
+        """
+        try:
+            vault.rebuild_key()
+        except VaultError as e:
+            self.errorOccurred.emit(str(e))
+            return
+        wy_clear_cookie()
+        self._reset_login_state()
+        self._set_status("未登录")
+        self.credentialsChanged.emit()
+        self.message.emit(
+            "已重建主密钥（旧密钥备份为 master.key.unreadable），请重新登录网易云"
+        )
+
+    def _sync_portable(self) -> None:
+        """把配置里的便携模式落到密钥文件上（启动时调用一次）。
+
+        配置是「意图」，密钥文件是「事实」：换机之后配置写着便携、密钥却还是
+        本机绑定的，一样解不开 —— 所以每次启动都对齐一次。
+        """
+        want = bool(self._config.get("account.portable", False))
+        try:
+            set_portable_preference(want)
+            if vault.portable() != want and vault.key_usable():
+                vault.set_portable(want)
+        except VaultError as e:
+            # 密钥本来就解不开：留给 restore() / 设置页去提示，这里不重复喊
+            logger.debug("应用便携模式失败: %s", e)
+
     @Property(str, constant=True)
     def dataDir(self) -> str:  # noqa: N802
         return str(paths.data_dir())
@@ -264,6 +365,8 @@ class AccountManager(QObject):
     @Slot()
     def restore(self) -> None:
         """启动时用已保存的加密凭据恢复登录态，并做一次服务端校验。"""
+        # 先把「便携模式」这个意图落到密钥文件上，再谈读凭据
+        self._sync_portable()
         if not bool(self._config.get("account.auto_login", True)):
             self._set_status("未登录")
             return
@@ -271,6 +374,9 @@ class AccountManager(QObject):
         try:
             payload = vault.load()
         except VaultError as e:
+            # 设置页据此显示「密钥在本机解不开」那张卡片，所以这里要刷新一次 ——
+            # 这条路径上不会走到下面的 credentialsChanged
+            self.credentialsChanged.emit()
             self.errorOccurred.emit(str(e))
             self._set_status("凭据不可用")
             return
