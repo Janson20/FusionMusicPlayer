@@ -33,6 +33,23 @@ def source_display(source: str) -> str:
         return "本地"
     return SOURCE_NAMES.get(source, source)
 
+def normalize_singers(raw: str) -> str:
+    """把歌手字段里的多个名字归一成「、」分隔（与在线音源保持一致）。
+
+    在线各源都会过 ``sources/utils.py:format_singer`` —— 它把 ``&`` ``;`` ``/``
+    换成「、」（``ui/ArtistNames.js`` 的注释也把这条当成不变量）。**本地文件是
+    mutagen 直接读出来的原始标签，一直少了这一步**：标签里写着 ``洛天依/乐正绫``
+    时，界面按「、」去拆、拆出来还是**一个**歌手 —— 看起来是一串、看不出是两个，点进去
+    还会去找「洛天依/乐正绫」这个不存在的歌手（界面弹「没找到歌手」）。
+
+    代价要知道：``AC/DC`` 这种名字里带斜杠的乐队同样会被拆开。这是**全应用既有
+    的取舍**（网易云那边的 ``format_singer`` 早就这么干了），本地跟着统一，
+    不去加「看着像乐队就不拆」的特例 —— 那只会让两边的行为更不一致。
+    """
+    from ..sources.utils import format_singer
+
+    return format_singer(str(raw or ""))
+
 @dataclass
 class Track:
     """统一曲目模型（在线音源 + 本地文件共用）。"""

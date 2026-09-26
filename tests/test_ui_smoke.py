@@ -409,7 +409,10 @@ class UiProbe(Application):
 
         # 行里的歌手名：进歌手页，且不会顺带把歌播了
         links = self.find_items("trackRowArtistLink", row)
-        check("曲目行里的歌手名可以点", len(links) > 0, f"{len(links)} 个")
+        # 「A、B」必须渲染成**两个**可点的名字。拆不开时整串会变成一个链接，
+        # 点下去找的是「A、B」这个不存在的歌手（真机上弹「没找到歌手」）；
+        # 拆得开的前提是扫描时把标签归一化过（见 test_core 的歌手拆分用例）。
+        check("两个歌手渲染成两个可点的名字", len(links) == 2, f"{len(links)} 个")
         playing_before = self.current_track()
         if links:
             self.click_item(links[0])

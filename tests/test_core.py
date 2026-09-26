@@ -290,6 +290,87 @@ def test_vault_path_follows_data_dir():
 
 
 # ──────────────────────────────────────────────────────────────
+# 歌手名的拆分（本地标签 / 老曲库迁移）
+# ──────────────────────────────────────────────────────────────
+
+
+def test_normalize_singers():
+    """歌手字段里的多名字分隔符统一成「、」。
+
+    在线各源都会过 ``sources/utils.py:format_singer``，本地文件的原始标签一直少了
+    这一步 —— 标签写着「洛天依/乐正绫」时界面按「、」去拆、拆出来还是一个歌手，
+    看起来是一串、点进去还会去找这个不存在的歌手。
+    """
+    from app.core.models import normalize_singers
+
+    assert normalize_singers("洛天依/乐正绫") == "洛天依、乐正绫"
+    assert normalize_singers("洛天依&乐正绫") == "洛天依、乐正绫"
+    assert normalize_singers("洛天依;乐正绫") == "洛天依、乐正绫"
+    assert normalize_singers("哔哩哔哩拜年纪/洛天依/hanser") == "哔哩哔哩拜年纪、洛天依、hanser"
+    # 幂等：在线音源来的值本来就是「、」拼的，读盘时再走一遍不会变样
+    assert normalize_singers("洛天依、乐正绫") == "洛天依、乐正绫"
+    assert normalize_singers("洛天依") == "洛天依"
+    assert normalize_singers("") == "" and normalize_singers(None) == ""
+
+
+def test_local_tags_normalize_singers():
+    """扫描本地文件时就把歌手拆开，而不是留到界面上想办法。"""
+    import tempfile
+    from pathlib import Path
+
+    from mutagen.id3 import ID3, TPE1, TIT2
+
+    from app.core.resolver import resolve_local_metadata
+
+    tmp = Path(tempfile.mkdtemp(prefix="fusion_singer_"))
+    path = tmp / "song.mp3"
+    header = b"\xff\xfb\x90\x00"
+    path.write_bytes((header + b"\x00" * (417 - len(header))) * 40)
+    tags = ID3()
+    tags.add(TIT2(encoding=3, text="霜雪千年"))
+    tags.add(TPE1(encoding=3, text="洛天依/乐正绫"))
+    tags.save(str(path))
+
+    track = resolve_local_metadata(str(path))
+    assert track.name == "霜雪千年"
+    assert track.singer == "洛天依、乐正绫"
+    # 界面按「、」拆，拆出来必须是**两个**歌手（这就是「两个歌手变成一个」那条）
+    assert [p for p in track.singer.split("、") if p] == ["洛天依", "乐正绫"]
+
+
+def test_stored_singers_are_migrated_on_load():
+    """老曲库 / 老的收藏与历史里存着未归一化的歌手：读盘时顺手修好。
+
+    不修的话用户得为了这个重新扫一遍曲库，而且「我喜欢的音乐」「最近播放」里的
+    本地歌同样中招。
+    """
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from app.core.store import Library
+
+    root = Path(tempfile.mkdtemp(prefix="fusion_migrate_"))
+    raw_track = {"source": "local", "songmid": "x.mp3", "name": "歌",
+                 "singer": "洛天依/乐正绫", "path": "x.mp3"}
+    (root / "local.json").write_text(json.dumps([raw_track]), encoding="utf-8")
+    (root / "favorites.json").write_text(json.dumps([raw_track]), encoding="utf-8")
+    (root / "playlists.json").write_text(
+        json.dumps({"version": 1, "playlists": [
+            {"id": "pl_test", "name": "自建歌单", "songs": [raw_track]},
+        ]}),
+        encoding="utf-8",
+    )
+
+    lib = Library(root)
+    lib.load()
+    assert lib.local_tracks()[0].singer == "洛天依、乐正绫"
+    assert lib.favorites()[0].singer == "洛天依、乐正绫"
+    playlist = lib.get_playlist("pl_test")
+    assert playlist is not None and playlist.songs[0].singer == "洛天依、乐正绫"
+
+
+# ──────────────────────────────────────────────────────────────
 # 歌词
 # ──────────────────────────────────────────────────────────────
 

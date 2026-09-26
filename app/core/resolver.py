@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 from . import cache
-from .models import LOCAL_SOURCE, Track
+from .models import LOCAL_SOURCE, Track, normalize_singers
 from .. import sources
 
 logger = logging.getLogger(__name__)
@@ -261,7 +261,9 @@ def resolve_local_metadata(path: str) -> Optional[Track]:
         if mf is not None:
             tags: Dict[str, object] = dict(mf.tags or {})
             name = _first(tags, ("title", "TIT2")) or name
-            singer = _first(tags, ("artist", "TPE1")) or ""
+            # 歌手要和在线音源一样归一成「、」分隔：标签里写着「洛天依/乐正绫」时
+            # 界面拆不开，会被当成一个歌手（见 models.normalize_singers）
+            singer = normalize_singers(_first(tags, ("artist", "TPE1")))
             album = _first(tags, ("album", "TALB")) or ""
             if getattr(mf, "info", None) is not None:
                 duration = int(getattr(mf.info, "length", 0) or 0)

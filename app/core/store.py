@@ -18,7 +18,23 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from .. import paths
-from .models import Track
+from .models import Track, normalize_singers
+
+def _migrate_singers(tracks: Iterable[Track]) -> List[Track]:
+    """读盘时把歌手字段归一成「、」分隔。
+
+    老曲库 / 老的收藏与历史里可能存着**未归一化**的本地标签（见
+    :func:`app.core.models.normalize_singers`）：不修的话用户得为了这个重新扫一遍
+    曲库，而且「我喜欢的音乐」「最近播放」里的本地歌同样会中招。
+    归一化是幂等的（在线音源的字段本来就是「、」拼的），所以每次读都做一遍没关系。
+    """
+    out = []
+    for track in tracks:
+        fixed = normalize_singers(track.singer)
+        if fixed != track.singer:
+            track.singer = fixed
+        out.append(track)
+    return out
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +193,9 @@ class Library:
         with self._lock:
             raw = _read_json(self._playlists_path, {"version": SCHEMA_VERSION, "playlists": []})
             self._playlists = [Playlist.from_dict(d) for d in (raw.get("playlists") or [])]
+            # 自建歌单里也可能躺着未归一化的本地歌（迁移见 _migrate_singers）
+            for playlist in self._playlists:
+                playlist.songs = _migrate_singers(playlist.songs)
             if not any(p.id == FAVORITES_ID for p in self._playlists):
                 self._playlists.insert(
                     0,
@@ -188,9 +207,15 @@ class Library:
                     ),
                 )
 
-            self._history = [Track.from_dict(d) for d in _read_json(self._history_path, [])]
-            self._favorites = [Track.from_dict(d) for d in _read_json(self._favorites_path, [])]
-            self._local = [Track.from_dict(d) for d in _read_json(self._local_path, [])]
+            self._history = _migrate_singers(
+                Track.from_dict(d) for d in _read_json(self._history_path, [])
+            )
+            self._favorites = _migrate_singers(
+                Track.from_dict(d) for d in _read_json(self._favorites_path, [])
+            )
+            self._local = _migrate_singers(
+                Track.from_dict(d) for d in _read_json(self._local_path, [])
+            )
 
             # 「我喜欢」与独立文件保持一致（以文件为准）
             fav = self.favorites_playlist()
