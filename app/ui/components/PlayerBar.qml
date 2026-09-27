@@ -14,17 +14,20 @@ import "../ArtistNames.js" as ArtistNames
 Rectangle {
     id: control
 
+    objectName: "playerBar"
+
     property bool expanded: false
     property bool canExpand: true
 
     signal expandToggled
     signal openNowPlaying
 
-    // 点歌手名进歌手页（只取第一位，这里放不下多个名字）
-    function openArtist(text) {
-        var name = ArtistNames.first(text)
-        if (name !== "")
-            artist.openByName(name)
+    // 点歌手名进歌手页。歌手行已按 ArtistNames 拆成单个名字（见下方 Repeater），
+    // 这里再 first() 一次只是容错：万一传进来的是整串，也别拿整串去找歌手。
+    function openArtist(name) {
+        var single = ArtistNames.first(name)
+        if (single !== "")
+            artist.openByName(single)
     }
 
     color: Theme.barBg
@@ -135,29 +138,56 @@ Rectangle {
                     elide: Text.ElideRight
                 }
 
-                // 歌手名可点（进歌手页），专辑名跟在后面
+                // 歌手行：与曲目行、展开播放页同一套渲染 —— 每位歌手单独可点、
+                // 分隔符是独立项。以前这里把整串歌手名塞进一个 Text（"神田沙也加、
+                // DECO*27" 看着像**一个**名字，点进去也只进第一位），与别处
+                // " / " 分开的样子对不上。
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 0
                     visible: player.artist !== ""
 
-                    FluText {
-                        objectName: "playerBarArtistLink"
-                        Layout.maximumWidth: 200
-                        Layout.alignment: Qt.AlignVCenter
-                        text: player.artist
-                        font.pixelSize: 11
-                        font.underline: barArtistMouse.containsMouse
-                        color: barArtistMouse.containsMouse ? Theme.accent : Theme.textTertiary
-                        elide: Text.ElideRight
+                    Repeater {
+                        // 播放栏窄（歌手区原本只给 200px），铺开 2 位，其余进「等 N 人」菜单
+                        model: ArtistNames.linkParts(player.artist, 2)
 
-                        MouseArea {
-                            id: barArtistMouse
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: control.openArtist(player.artist)
+                        delegate: FluText {
+                            required property var modelData
+
+                            objectName: modelData.more
+                                ? "playerBarArtistMore"
+                                : (modelData.separator ? "playerBarArtistSep"
+                                                       : "playerBarArtistLink")
+                            Layout.alignment: Qt.AlignVCenter
+                            Layout.maximumWidth: modelData.separator ? Number.POSITIVE_INFINITY : 110
+                            text: modelData.text
+                            font.pixelSize: 11
+                            font.underline: barArtistMouse.containsMouse && !modelData.separator
+                            color: (barArtistMouse.containsMouse && !modelData.separator)
+                                   ? Theme.accent : Theme.textTertiary
+                            elide: Text.ElideRight
+
+                            MouseArea {
+                                id: barArtistMouse
+                                anchors.fill: parent
+                                enabled: !modelData.separator
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    if (modelData.more)
+                                        barArtistMenu.popup()
+                                    else
+                                        control.openArtist(modelData.name)
+                                }
+                            }
                         }
+                    }
+
+                    ArtistMenu {
+                        id: barArtistMenu
+                        objectName: "playerBarArtistMenu"
+                        names: ArtistNames.split(player.artist)
+                        onArtistChosen: function (name) { control.openArtist(name) }
                     }
 
                     // 歌手与专辑之间的「 · 」独立成项：拼进专辑名里的话，悬停时

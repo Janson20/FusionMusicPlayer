@@ -584,6 +584,30 @@ class UiProbe(Application):
                   self.current_track() == "测试歌曲 A", f"{self.current_track()!r}")
             check("点行内其它位置不会打开专辑页", not self.album.opened)
 
+        # 播放栏的歌手名：和曲目行、展开播放页必须是同一套渲染。
+        # 曾经这里把整串歌手名塞进一个 Text ——「WOVOP、洛天依」看着像**一个**
+        # 名字（别处是「 / 」分开的），点下去还只进第一位。
+        bar_links = [i for i in self.find_items("playerBarArtistLink") if i.isVisible()]
+        bar_seps = [i for i in self.find_items("playerBarArtistSep") if i.isVisible()]
+        check("播放栏两个歌手渲染成两个可点的名字", len(bar_links) == 2, f"{len(bar_links)} 个")
+        check("播放栏歌手之间的分隔符是独立的一项", len(bar_seps) == 1, f"{len(bar_seps)} 个")
+        check("播放栏歌手名里不带分隔符",
+              all("、" not in str(t.property("text")) for t in bar_links),
+              f"{[t.property('text') for t in bar_links]}")
+        if len(bar_links) == 2:
+            ordered = sorted(bar_links, key=lambda i: i.mapToItem(None, QPointF(0, 0)).x())
+            check("播放栏歌手按原顺序排列",
+                  [str(t.property("text")) for t in ordered] == ["WOVOP", "洛天依"],
+                  f"{[t.property('text') for t in ordered]}")
+            self.click_item(ordered[1])
+            check("点播放栏歌手打开歌手页", self.artist.opened)
+            check("点播放栏第二位歌手进的就是第二位",
+                  "洛天依" in str(self.artist.pageTitle), str(self.artist.pageTitle))
+            back = self.item("artistBackButton")
+            if back is not None:
+                self.click_item(back)
+                self.pump(600)
+
         # 播放栏的专辑名
         bar_album = self.item("playerBarAlbumLink")
         check("播放栏里的专辑名可以点", bar_album is not None)
