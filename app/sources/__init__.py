@@ -40,8 +40,10 @@ FALLBACK_ONLY_SOURCES: Tuple[str, ...] = ("bili",)
 
 # 跨源兜底：每个音源搜索的候选条数
 RESOLVE_SEARCH_LIMIT = 20
-# 兜底音质尝试顺序（高音质在前，否则会默认命中 128k）
-RESOLVE_QUALITY_ORDER = ["flac", "320k", "128k"]
+# 兜底音质尝试顺序（高音质在前，否则会默认命中 128k）。
+# Hi-Res 母带要排在最前：设置里能选「Hi-Res 母带」、"auto" 也应当尽力取最高，
+# 缺了它这一档就永远试不到（会静默退成无损）。
+RESOLVE_QUALITY_ORDER = ["flac24bit", "flac", "320k", "128k"]
 
 _BUILDERS = {
     # 网易云用 app/sources/netease.py 里的子类：它修正了上游把 vipType 读在
@@ -147,23 +149,44 @@ def search_all(
     return [{"source": sid, "results": out[sid], "total": totals.get(sid, 0)} for sid in ordered]
 
 
-def get_music_url(
+def quality_order(
     info: MusicInfo, quality: str = "320k", source_id: Optional[str] = None
-) -> Optional[str]:
-    """获取指定歌曲在指定音源上的播放 URL。"""
+) -> List[str]:
+    """这首歌在该音源上应该按什么顺序试音质（首项 = 首选档位）。
+
+    单独暴露出来是为了让调用方**自己掌握降级过程**：只有它才知道最后真正取到
+    地址的是哪一档，界面上的音质标签才不会写成"我想要的那一档"。
+    """
     src = get_source(source_id or info.source)
     if src is None:
-        return None
+        return _quality_attempt_order(quality)
     try:
         best = src.get_best_quality(info, quality)
     except Exception:
         best = quality
-    for q in _quality_attempt_order(best):
-        try:
-            url = src.get_music_url(info, q)
-        except Exception as e:
-            logger.debug("[%s] 取播放地址失败 (%s): %s", info.source, q, e)
-            url = None
+    return _quality_attempt_order(best)
+
+
+def get_music_url_exact(
+    info: MusicInfo, quality: str = "320k", source_id: Optional[str] = None
+) -> Optional[str]:
+    """只按**指定档位**取地址，不做降级（降级交给 :func:`quality_order` 的调用方）。"""
+    src = get_source(source_id or info.source)
+    if src is None:
+        return None
+    try:
+        return src.get_music_url(info, quality)
+    except Exception as e:
+        logger.debug("[%s] 取播放地址失败 (%s): %s", info.source, quality, e)
+        return None
+
+
+def get_music_url(
+    info: MusicInfo, quality: str = "320k", source_id: Optional[str] = None
+) -> Optional[str]:
+    """获取指定歌曲在指定音源上的播放 URL（内部按档位逐级降级）。"""
+    for q in quality_order(info, quality, source_id):
+        url = get_music_url_exact(info, q, source_id)
         if url:
             return url
     return None
@@ -225,8 +248,11 @@ def resolve_track(
     quality: str = "320k",
     excluded_sources: Optional[Iterable[str]] = None,
     limit: int = RESOLVE_SEARCH_LIMIT,
-) -> Optional[Tuple[MusicInfo, str]]:
+) -> Optional[Tuple[MusicInfo, str, str]]:
     """跨源兜底：在其它音源中搜索同款歌并取回可播放 URL。
+
+    返回 ``(MusicInfo, url, 实际音质档位)``；实际档位是**取到地址的那一档**，
+    不是请求的那一档（调用方要拿它显示音质）。
 
     流程（与 FMCL 完全一致）:
         1. 排除 ``info.source``，对其余音源并发搜索 ``"歌名 歌手"``
@@ -244,7 +270,7 @@ def resolve_track(
         return None
 
     keyword = f"{info.name} {info.singer}".strip() or info.name
-    quality_order = _quality_attempt_order(quality)
+    order = _quality_attempt_order(quality)
 
     def _try_source(source_id: str):
         src = get_source(source_id)
@@ -262,14 +288,14 @@ def resolve_track(
             return None
         candidates.sort(key=lambda i: abs(i.interval - info.interval))
         for cand in candidates:
-            for q in quality_order:
+            for q in order:
                 try:
                     url = src.get_music_url(cand, q)
                 except Exception as e:
                     logger.debug("[resolve] %s 取地址失败 [%s]: %s", source_id, cand.name, e)
                     url = None
                 if url:
-                    return (cand, url)
+                    return (cand, url, q)
         return None
 
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=len(source_ids))
@@ -374,6 +400,8 @@ __all__ = [
     "search_one",
     "search_all",
     "get_music_url",
+    "get_music_url_exact",
+    "quality_order",
     "get_lyric",
     "get_pic_url",
     "download_headers",

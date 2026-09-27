@@ -138,7 +138,16 @@ def resolve(
         )
 
     # ── 在线曲目 ────────────────────────────────────────────
-    url = sources.get_music_url(track.to_music_info(), quality, track.source)
+    # 逐档尝试（而不是把降级丢给 sources.get_music_url）：只有这里知道**最后取到
+    # 地址的是哪一档**，音质标签才不会写成"我想要的那一档"。
+    info = track.to_music_info()
+    url = ""
+    actual = ""
+    for candidate in sources.quality_order(info, quality, track.source):
+        url = sources.get_music_url_exact(info, candidate, track.source) or ""
+        if url:
+            actual = candidate
+            break
     if url:
         target = _maybe_localize(track, url, cache_media=cache_media)
         if target:
@@ -146,7 +155,7 @@ def resolve(
                 track=track,
                 target=target[0],
                 is_local=target[1],
-                quality=_effective_quality(track, quality),
+                quality=_effective_quality(track, quality, actual),
                 requested=track,
             )
         logger.info("音源 %s 返回的地址无法使用，转入跨源兜底: %s", track.source, track.name)
@@ -159,7 +168,7 @@ def resolve(
             track.to_music_info(), quality, excluded_sources=exclude_sources
         )
         if result:
-            info, fb_url = result
+            info, fb_url, fb_quality = result
             fb_track = Track.from_music_info(info)
             fb_track.path = ""
             target = _maybe_localize(fb_track, fb_url, cache_media=True)
@@ -168,7 +177,7 @@ def resolve(
                     track=fb_track,
                     target=target[0],
                     is_local=target[1],
-                    quality=_effective_quality(fb_track, quality),
+                    quality=_effective_quality(fb_track, quality, fb_quality),
                     fallback=True,
                     requested=track,
                 )
@@ -176,7 +185,15 @@ def resolve(
     logger.warning("解析失败，所有音源均不可用: %s - %s", track.name, track.singer)
     return None
 
-def _effective_quality(track: Track, requested: str) -> str:
+def _effective_quality(track: Track, requested: str, actual: str = "") -> str:
+    """实际播放的音质档位。
+
+    ``actual`` 是**真正取到播放地址的那一档**（见 :func:`resolve`）。以前这里直接
+    回显请求值（``auto`` 时回显 ``track.best_quality``），于是服务端悄悄降级时
+    界面还在报"无损" —— 实测非会员请求无损会拿到 ``level=exhigh``。
+    """
+    if actual:
+        return actual
     if requested == "auto":
         try:
             return track.best_quality

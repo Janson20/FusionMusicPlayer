@@ -38,6 +38,59 @@ WY_API_BASE = "https://music.163.com/weapi"
 # 且参数放 URL 查询串（与 NeteaseCloudMusicApi 同路由）
 WY_API_ALT_BASE = "https://music.163.com/api"
 
+# ── 音质档位映射 ────────────────────────────────────────────
+# 网易按"最高可达档位"给一个 level 名，低档位是**包含**的（能放无损就能放
+# 320k/128k），所以下面只需要认最高档。
+#
+# ``privilege.playMaxBrLevel`` / ``maxBrLevel`` → 内部档位
+_WY_LEVEL_TO_QUALITY = {
+    "standard": "128k",
+    "higher": "128k",
+    "exhigh": "320k",
+    "lossless": "flac",
+    "sky": "flac",          # 沉浸声：无损级别
+    "jyeffect": "flac",     # 音效：无损级别
+    "hires": "flac24bit",
+    "jymaster": "flac24bit",  # 母带
+}
+#: level 名缺失时按 maxbr 兜底（网易口径：999000 = 无损，1999000 = Hi-Res）
+_WY_MAXBR_TO_QUALITY = (
+    (1999000, "flac24bit"),
+    (999000, "flac"),
+    (320000, "320k"),
+    (128000, "128k"),
+)
+#: 内部档位 → 请求播放地址时要的 ``br``
+_WY_QUALITY_BR = {"flac24bit": 1999000, "flac": 999000, "320k": 320000, "128k": 128000}
+#: 内部档位 → v1 接口认的 ``level`` 名（标准名和我们的档位 id 不是一回事）
+_WY_REQUEST_LEVEL = {"flac24bit": "hires", "flac": "lossless", "320k": "exhigh", "128k": "standard"}
+#: 服务端返回的 level → 排序等级，用来判断"是不是被静默降级了"
+_WY_LEVEL_RANK = {
+    "standard": 0, "higher": 1, "exhigh": 2,
+    "lossless": 3, "sky": 3, "jyeffect": 3,
+    "hires": 4, "jymaster": 4,
+}
+#: 内部档位的排序等级（同一把尺子）
+_WY_QUALITY_RANK = {"128k": 0, "320k": 2, "flac": 3, "flac24bit": 4}
+#: 档位 → 详情/FM 条目里装这一档的子对象名
+_WY_QUALITY_SUBKEYS = {
+    "flac24bit": ("hr", "hires"),
+    "flac": ("sq", "sqMusic"),
+    "320k": ("h", "hMusic"),
+    "128k": ("l", "lMusic"),
+}
+
+
+def _quality_served_rank(item: dict) -> int:
+    """服务端这一条实际给的是哪一档（返回等级）。
+
+    认不出来的 level（老接口、以后新加的档位）一律当作"不比请求低" —— 宁可
+    放行，也不要因为不认识就把能放的地址拒掉。
+    """
+    level = str((item or {}).get("level") or "").lower()
+    return _WY_LEVEL_RANK.get(level, 99)
+
+
 # 歌名末尾的括号版本后缀（Live/伴奏/翻唱/中文版等标注），分组判定原唱时忽略。
 # 仅剥离"含版本词"的括号：真实歌名一部分的括号（如 幹物女(WeiWei)、
 # 逃避现实 (feat.洛天依)）不属于版本后缀，不剥离，避免原版被误判"不干净"。
@@ -576,39 +629,53 @@ class NetEaseMusicSource(BaseMusicSource):
         return results
 
     def _parse_types(self, item: dict):
+        """推断这首歌可用的音质档位（低 → 高）。
+
+        三种数据形态实测都会遇到，必须都认：
+
+        * **搜索** ``baseInfo.simpleSongData`` —— ``privilege`` 内联，另有
+          ``hr`` / ``sq`` / ``h`` / ``m`` / ``l`` 子对象；
+        * **私人 FM** ``/api/v1/radio/get`` —— ``privilege`` 内联（含
+          ``playMaxBrLevel``），但只有 ``hMusic`` / ``mMusic`` / ``lMusic``，
+          **没有 ``sq``**，而且子对象给的是 ``bitrate`` 不是 ``br``；
+        * **详情** ``/api/v3/song/detail`` —— ``songs[i]`` 里**没有**
+          ``privilege``（它在同级的 ``privileges`` 数组里，由调用方合并，
+          见 :meth:`_parse_song_detail_songs`），子对象是 ``hr``/``sq``/``h``/``l``。
+
+        以前只看子对象、还要求 ``br >= 999000`` 才算无损，于是两类歌全被判低：
+        FM 的每一首（没有 ``sq``）都被当成"最高 320k"，**漫游整条流都放不到无损**；
+        详情/搜索里 ``sq.br`` 不到 999000 的歌（实测 639052、986757）也被降成 320k。
+
+        判定优先级（子对象的 ``br`` **不参与**）：权限里的 level 名 → 权限里的
+        ``maxbr`` → 子对象是否存在。无损的真实码率随歌浮动（实测 639052 ~
+        1762843），拿它跟 999000 比必然漏判；**子对象在，就说明这一档有**。
+        """
+        priv = item.get("privilege") or {}
+        subs = {
+            quality: next((item.get(key) for key in keys if item.get(key)), None) or {}
+            for quality, keys in _WY_QUALITY_SUBKEYS.items()
+        }
+
+        level = str(priv.get("playMaxBrLevel") or priv.get("maxBrLevel") or "").lower()
+        top = _WY_LEVEL_TO_QUALITY.get(level, "")
+        if not top:
+            maxbr = int(priv.get("maxbr") or priv.get("playMaxbr") or 0)
+            for threshold, quality in _WY_MAXBR_TO_QUALITY:
+                if maxbr >= threshold:
+                    top = quality
+                    break
+        if not top:
+            top = next((q for q in ("flac24bit", "flac", "320k", "128k") if subs[q]), "")
+        top = top or "128k"
+
         types = []
         _types = {}
-        priv = item.get("privilege", {})
-        maxbr = int(priv.get("maxbr") or 0)
-        # 无 privilege（eapi 歌单详情/老格式接口）时从音质子对象的 br/bitrate 反推
-        if not maxbr:
-            for key in ("sq", "sqMusic", "h", "hMusic", "m", "mMusic", "l", "lMusic"):
-                sub = item.get(key) or {}
-                br = int(sub.get("br") or sub.get("bitrate") or 0)
-                if br > maxbr:
-                    maxbr = br
-
-        # flac (SQ)
-        if maxbr >= 999000:
-            sq = item.get("sq") or item.get("sqMusic") or {}
-            if sq:
-                types.append({"type": "flac"})
-                _types["flac"] = {"id": sq.get("id", item.get("id", ""))}
-
-        # 320k (HQ)
-        if maxbr >= 320000:
-            hq = item.get("h") or item.get("hMusic") or {}
-            if hq:
-                types.append({"type": "320k"})
-                _types["320k"] = {"id": hq.get("id", item.get("id", ""))}
-
-        # 128k
-        low = item.get("l") or item.get("lMusic") or {}
-        if low:
-            types.append({"type": "128k"})
-            _types["128k"] = {"id": low.get("id", item.get("id", ""))}
-
-        types.reverse()
+        for quality in ("128k", "320k", "flac", "flac24bit"):
+            if _WY_QUALITY_RANK[quality] > _WY_QUALITY_RANK[top]:
+                break
+            sub = subs[quality]
+            types.append({"type": quality})
+            _types[quality] = {"id": sub.get("id", item.get("id", ""))}
         return types, _types
 
     # ── 原唱识别与置顶 ──────────────────────────────
@@ -860,7 +927,7 @@ class NetEaseMusicSource(BaseMusicSource):
                 resp = self._eapi_post(
                     "/api/v3/song/detail", {"c": json.dumps([{"id": int(song_id)}])}
                 )
-                songs = resp.get("songs") or []
+                songs = self._merge_privileges(resp.get("songs") or [], resp.get("privileges"))
                 if not songs:
                     return None
                 self._pin_original_cache[song_id] = songs
@@ -1276,31 +1343,46 @@ class NetEaseMusicSource(BaseMusicSource):
     # ── 获取播放URL ─────────────────────────────────
 
     def get_music_url(self, info: MusicInfo, quality: str = "128k") -> Optional[str]:
-        song_id = info.songmid
-        br_map = {"flac24bit": "hires", "flac": "999000", "320k": "320000", "128k": "128000"}
-        br = br_map.get(quality, "128000")
+        """取**指定档位**的播放地址；服务端静默降级时返回 None。
 
-        # 使用 eapi 接口获取播放URL
-        url = "/api/song/enhance/player/url"
-        data = {"ids": f"[{song_id}]", "br": int(br)}
+        为什么要拦降级：按 ``br`` 请求时服务端不报错，而是直接给一个更低档位的
+        地址（实测：非会员请求无损会拿到 ``level=exhigh``）。以前把它当成功返回，
+        于是"实际在放 320k、界面却报无损"。现在比对返回的 ``level``，低于请求档位
+        就算这档拿不到，交给上层的降级顺序去试下一档 —— 最终用的是哪一档是**知道**
+        的，界面不会说谎（见 :func:`app.core.resolver._effective_quality`）。
+        """
+        song_id = info.songmid
+        br = _WY_QUALITY_BR.get(quality, _WY_QUALITY_BR["128k"])
+        wanted_rank = _WY_QUALITY_RANK.get(quality, 0)
+
+        # 主路径：eapi，按 br 请求
         try:
-            resp = self._eapi_post(url, data)
-            urls = resp.get("data", [])
-            if urls and urls[0].get("url"):
-                play_url = urls[0]["url"]
-                return play_url
+            resp = self._eapi_post("/api/song/enhance/player/url", {"ids": f"[{song_id}]", "br": br})
+            got = (resp.get("data") or [{}])[0]
+            if got.get("url"):
+                served = _quality_served_rank(got)
+                if served >= wanted_rank:
+                    return got["url"]
+                logger.debug(
+                    "网易 %s 请求 %s 只给到 %s（level=%s），按不可用处理",
+                    song_id, quality, got.get("br"), got.get("level"),
+                )
         except Exception as e:
             # 单个候选失败属兜底流程常态，降为 debug 避免刷屏（外层有汇总日志）
             logger.debug(f"网易获取URL失败 [{info.songmid}]: {e}")
 
-        # 回退到 weapi
+        # 回退到 weapi v1 接口：这里要的是标准 level 名（standard/exhigh/lossless/hires）
         try:
-            weapi_url = "/song/enhance/player/url/v1"
-            weapi_data = {"ids": f"[{song_id}]", "level": quality, "encodeType": "aac"}
-            resp2 = self._weapi_post(weapi_url, weapi_data)
-            urls2 = resp2.get("data", [])
-            if urls2 and urls2[0].get("url"):
-                return urls2[0]["url"]
+            level = _WY_REQUEST_LEVEL.get(quality, "standard")
+            weapi_data = {
+                "ids": f"[{song_id}]",
+                "level": level,
+                "encodeType": "flac" if _WY_QUALITY_RANK.get(quality, 0) >= 3 else "mp3",
+            }
+            resp2 = self._weapi_post("/song/enhance/player/url/v1", weapi_data)
+            got2 = (resp2.get("data") or [{}])[0]
+            if got2.get("url") and _quality_served_rank(got2) >= wanted_rank:
+                return got2["url"]
         except Exception:
             pass
 
@@ -1611,13 +1693,15 @@ class NetEaseMusicSource(BaseMusicSource):
             return None
         try:
             track_count = int(playlist.get("trackCount") or 0)
-            tracks = playlist.get("tracks") or []
+            tracks = self._merge_privileges(playlist.get("tracks") or [],
+                                            playlist.get("privileges"))
             if track_count > 0 and len(tracks) >= track_count:
                 return self._parse_song_detail_songs(tracks)
             # tracks 不完整：trackIds（新格式）→ 分批 /api/v3/song/detail 补齐
             track_ids = [str(t.get("id", "")) for t in (playlist.get("trackIds") or []) if t.get("id")]
             if track_ids:
-                raw_songs = []
+                raw_songs: List[dict] = []
+                raw_privileges: List[dict] = []
                 for i in range(0, len(track_ids), 1000):
                     batch = [{"id": int(tid)} for tid in track_ids[i : i + 1000]]
                     try:
@@ -1626,24 +1710,52 @@ class NetEaseMusicSource(BaseMusicSource):
                         logger.debug(f"网易补齐歌单歌曲失败: {e}")
                         detail = {}
                     raw_songs.extend(detail.get("songs") or [])
+                    raw_privileges.extend(detail.get("privileges") or [])
                 if raw_songs:
-                    return self._parse_song_detail_songs(raw_songs)
+                    return self._parse_song_detail_songs(raw_songs, raw_privileges)
             # 无 trackIds（老格式）或补齐失败：返回已有的 tracks（尽力而为）
             return self._parse_song_detail_songs(tracks)
         except Exception as e:
             logger.warning(f"网易获取歌单歌曲异常 [{playlist_id}]: {e}")
             return None
 
-    def _parse_song_detail_songs(self, raw_songs) -> List[MusicInfo]:
+    @staticmethod
+    def _merge_privileges(songs, privileges) -> List[dict]:
+        """把详情接口**单独返回**的 ``privileges`` 数组合并进 ``songs``（按 id 对齐）。
+
+        v3 详情接口把权限放在同级的 ``privileges`` 里，``songs[i].privilege`` 是
+        null；而可用音质只能从权限上读（``playMaxBrLevel``）。这里合并成
+        **浅拷贝**，调用方缓存的原始响应不会被改写。
+        """
+        priv_map = {
+            str(p.get("id")): p
+            for p in (privileges or [])
+            if isinstance(p, dict) and p.get("id") is not None
+        }
+        if not priv_map:
+            return list(songs or [])
+        merged: List[dict] = []
+        for song in songs or []:
+            if isinstance(song, dict) and not song.get("privilege"):
+                extra = priv_map.get(str(song.get("id")))
+                if extra:
+                    song = {**song, "privilege": extra}
+            merged.append(song)
+        return merged
+
+    def _parse_song_detail_songs(self, raw_songs, privileges=None) -> List[MusicInfo]:
         """解析歌曲详情数组为 MusicInfo 列表
 
         兼容两种字段格式:
             - 新格式: ar / al / dt / h / l / sq / privilege（v3/v6 详情接口）
             - 老格式: artists / album / duration / hMusic / lMusic / sqMusic
               （/api/playlist/detail 的 result.tracks、老版 /api/song/detail）
+
+        ``privileges`` 见 :meth:`_merge_privileges`：不传的话，这批歌的音质会被
+        判成"只有 320k"（无损丢失）。
         """
         results = []
-        for item in raw_songs or []:
+        for item in self._merge_privileges(raw_songs, privileges):
             try:
                 raw_artists = item.get("ar") or item.get("artists") or []
                 singers = [format_singer(decode_name(s.get("name", ""))) for s in raw_artists]

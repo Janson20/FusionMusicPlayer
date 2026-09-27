@@ -1897,6 +1897,143 @@ def test_pending_marker_roundtrip():
             os.environ["FUSION_MUSIC_HOME"] = saved
 
 
+# ──────────────────────────────────────────────────────────────
+# 音质档位（漫游曾整条流被判成 320K）
+# ──────────────────────────────────────────────────────────────
+
+#: 私人 FM（/api/v1/radio/get）的真实条目骨架：privilege 内联，
+#: **没有 sq/sqMusic**，子对象给的是 bitrate 而不是 br —— 就是这三条
+#: 让旧实现把每一首都判成"最高 320k"。
+_FM_ITEM_HIRES = {
+    "id": 2025189982,
+    "name": "你看，天又黑了",
+    "fee": 8,
+    "privilege": {"id": 2025189982, "maxbr": 999000, "playMaxbr": 999000,
+                  "playMaxBrLevel": "hires", "maxBrLevel": "hires"},
+    "hMusic": {"id": 6945009647, "size": 4966444, "bitrate": 320000},
+    "mMusic": {"id": 6945009648, "size": 2979884, "bitrate": 192000},
+    "lMusic": {"id": 6945009649, "size": 1986604, "bitrate": 128000},
+}
+#: 搜索（baseInfo.simpleSongData）的真实骨架：privilege 内联 + hr/sq 子对象
+_SEARCH_ITEM_HIRES = {
+    "id": 3440441479,
+    "name": "晴天",
+    "privilege": {"id": 3440441479, "maxbr": 999000, "maxBrLevel": "hires",
+                  "playMaxBrLevel": "hires"},
+    "hr": {"id": 1, "br": 1497807, "size": 1},
+    "sq": {"id": 2, "br": 735085, "size": 1},
+    "h": {"id": 3, "br": 320003, "size": 1},
+    "m": {"id": 4, "br": 192003, "size": 1},
+    "l": {"id": 5, "br": 128003, "size": 1},
+}
+#: 详情（/api/v3/song/detail）的真实骨架：songs[i] 里没有 privilege，
+#: 只有 sq/h/l 子对象，且**无损的 br 远低于 999000**（实测 639052）
+_DETAIL_ITEM = {
+    "id": 434902428,
+    "name": "花火が瞬く夜に",
+    "sq": {"id": 11, "br": 639052, "size": 1},
+    "h": {"id": 12, "br": 320003, "size": 1},
+    "l": {"id": 13, "br": 128003, "size": 1},
+}
+_DETAIL_PRIVILEGE = {"id": 434902428, "maxbr": 999000, "maxBrLevel": "lossless",
+                     "playMaxBrLevel": "lossless"}
+
+
+def test_wy_quality_types_from_real_shapes():
+    """三种真实数据形态都要能判出正确档位（尤其不能把无损漏掉）。"""
+    from app.sources.wy import NetEaseMusicSource
+
+    src = NetEaseMusicSource()
+
+    # 私人 FM：以前判成 ['128k','320k']，漫游因此整条流放不到无损
+    fm_types = [t["type"] for t in src._parse_types(_FM_ITEM_HIRES)[0]]
+    assert fm_types == ["128k", "320k", "flac", "flac24bit"], fm_types
+
+    # 搜索：hr 子对象在 → 有 Hi-Res
+    search_types = [t["type"] for t in src._parse_types(_SEARCH_ITEM_HIRES)[0]]
+    assert search_types == ["128k", "320k", "flac", "flac24bit"], search_types
+
+    # 详情：sq.br=639052 < 999000，但无损就是无损
+    detail_types = [t["type"] for t in src._parse_types(_DETAIL_ITEM)[0]]
+    assert detail_types == ["128k", "320k", "flac"], detail_types
+
+    # 什么都没有的裸条目：至少给 128k，别给空列表
+    assert [t["type"] for t in src._parse_types({"id": 1})[0]] == ["128k"]
+
+    # 只有 320k 的歌不许被抬成无损
+    plain = {"id": 2, "privilege": {"maxbr": 320000, "playMaxBrLevel": "exhigh"},
+             "hMusic": {"bitrate": 320000}, "lMusic": {"bitrate": 128000}}
+    assert [t["type"] for t in src._parse_types(plain)[0]] == ["128k", "320k"]
+
+
+def test_wy_merge_privileges_for_detail_response():
+    """详情接口把权限放在同级的 privileges 数组里，要能按 id 合上。"""
+    from app.sources.wy import NetEaseMusicSource
+
+    src = NetEaseMusicSource()
+    merged = src._merge_privileges([dict(_DETAIL_ITEM)], [_DETAIL_PRIVILEGE])
+    assert merged[0]["privilege"]["playMaxBrLevel"] == "lossless"
+    # 原对象不许被改写（调用方会缓存原始响应）
+    assert "privilege" not in _DETAIL_ITEM
+
+    parsed = src._parse_song_detail_songs([dict(_DETAIL_ITEM)], [_DETAIL_PRIVILEGE])
+    assert parsed and [t["type"] for t in parsed[0].types] == ["128k", "320k", "flac"]
+    # 不传 privileges 时退化（这不是我们要的行为，但也不能抛异常）
+    assert src._parse_song_detail_songs([dict(_DETAIL_ITEM)])[0].types
+
+
+def test_wy_served_level_detection():
+    """服务端静默降级要认得出：认不出的 level 一律放行（宁可放，不可误杀）。"""
+    from app.sources.wy import _quality_served_rank
+
+    assert _quality_served_rank({"level": "standard"}) == 0
+    assert _quality_served_rank({"level": "exhigh"}) == 2
+    assert _quality_served_rank({"level": "lossless"}) == 3
+    assert _quality_served_rank({"level": "hires"}) == 4
+    assert _quality_served_rank({"level": "jymaster"}) == 4
+    assert _quality_served_rank({}) > 4          # 没有 level：不拦
+    assert _quality_served_rank({"level": "某种新档位"}) > 4
+
+
+def test_quality_attempt_order_covers_hi_res():
+    """Hi-Res 必须在尝试顺序里，否则设置里的「Hi-Res 母带」永远试不到。"""
+    from app.sources import RESOLVE_QUALITY_ORDER, _quality_attempt_order
+
+    assert RESOLVE_QUALITY_ORDER[0] == "flac24bit"
+    assert _quality_attempt_order("auto") == ["flac24bit", "flac", "320k", "128k"]
+    assert _quality_attempt_order("flac24bit")[0] == "flac24bit"
+    assert _quality_attempt_order("320k")[0] == "320k"
+    # 不认识的档位退回默认顺序，不能抛
+    assert _quality_attempt_order("不存在的档位") == RESOLVE_QUALITY_ORDER
+
+
+def test_effective_quality_reports_what_actually_played():
+    """音质标签要以**真正取到地址的那一档**为准，不是"我想要的那一档"。"""
+    from app.core.models import Track
+    from app.core.resolver import _effective_quality
+
+    track = Track(source="wy", songmid="1", name="x", singer="y",
+                  types=[{"type": "128k"}, {"type": "320k"}, {"type": "flac"}])
+    # 服务端只给到 320k（实际档位是 320k）→ 如实报 320k
+    assert _effective_quality(track, "auto", "320k") == "320k"
+    assert _effective_quality(track, "flac", "320k") == "320k"
+    # 没有实际档位信息时退回旧口径：auto 用曲目最佳，显式设置回显设置
+    assert _effective_quality(track, "auto") == "flac"
+    assert _effective_quality(track, "320k") == "320k"
+
+
+def test_best_quality_prefers_hi_res():
+    """曲目行角标用的 best_quality 要能取到最高档。"""
+    from app.core.models import Track
+
+    track = Track(source="wy", songmid="1", name="x", singer="y",
+                  types=[{"type": "128k"}, {"type": "320k"}, {"type": "flac"},
+                         {"type": "flac24bit"}])
+    assert track.best_quality == "flac24bit"
+    assert track.quality_list == ["128k", "320k", "flac", "flac24bit"]
+    assert Track(source="wy", songmid="1", name="x", singer="y").best_quality == "128k"
+
+
 if __name__ == "__main__":
     import traceback
 
