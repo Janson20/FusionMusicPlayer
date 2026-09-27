@@ -40,6 +40,10 @@ logger = logging.getLogger(__name__)
 FADE_STEPS = 20
 FADE_INTERVAL_MS = 50
 
+#: 音量均衡增益的斜坡：分析结果可能在播放中途才到，直接跳变会有可闻的响度台阶
+GAIN_RAMP_STEPS = 10
+GAIN_RAMP_INTERVAL_MS = 40
+
 #: 队列 / 曲目变化后隔多久把会话写盘（合并「播放全部」那种连着改好几次的操作）
 SESSION_SAVE_DELAY_MS = 1500
 #: 播放中每隔多久记一次进度。这只是掉电 / 被强杀的兜底：正常退出走
@@ -52,6 +56,8 @@ class _Emitter(QObject):
 
     resolved = Signal(int, object)
     lyricReady = Signal(int, object)
+    #: 预取分析用的解析结果（track, 播放地址, 是否本地文件）
+    analysisReady = Signal(object, str, bool)
 
 class PlayerEngine(QObject):
     """播放引擎，直接暴露给 QML。"""
@@ -75,11 +81,15 @@ class PlayerEngine(QObject):
     statusMessage = Signal(str)
     fallbackUsed = Signal(str)
     seekableChanged = Signal()
+    #: 音量均衡增益变化（曲目切换、或后台分析出结果之后）
+    gainChanged = Signal()
 
-    def __init__(self, config: Config, library: Library, parent=None):
+    def __init__(self, config: Config, library: Library, loudness=None, parent=None):
         super().__init__(parent)
         self._config = config
         self._library = library
+        #: 音量均衡服务（可为 None：测试或关闭该功能时全部按 0 dB 处理）
+        self._loudness = loudness
 
         self._player = QMediaPlayer(self)
         self._output = QAudioOutput(self)
@@ -123,9 +133,22 @@ class PlayerEngine(QObject):
         self._fade_timer = QTimer(self)
         self._fade_timer.setInterval(FADE_INTERVAL_MS)
         self._fade_step = 0
-        self._fade_target = 0.0
         self._fade_dir = 0
         self._fade_timer.timeout.connect(self._fade_tick)
+
+        # ── 音量合成 ────────────────────────────────────────
+        # 输出音量 = 用户音量 × 淡入淡出系数 × 音量均衡增益。
+        # 三个因子各管各的：滑块只动第一个，淡入淡出只动第二个，
+        # 均衡只动第三个 —— 于是「分析出结果时正在淡入」这类交叠也不会打架。
+        self._user_volume = self._read_user_volume(config)
+        self._fade_factor = 1.0
+        self._gain_ratio = 1.0
+        self._gain_target = 1.0
+        self._gain_from = 1.0
+        self._gain_step = 0
+        self._gain_timer = QTimer(self)
+        self._gain_timer.setInterval(GAIN_RAMP_INTERVAL_MS)
+        self._gain_timer.timeout.connect(self._gain_tick)
 
         self._progress_timer = QTimer(self)
         self._progress_timer.setInterval(200)
@@ -146,10 +169,21 @@ class PlayerEngine(QObject):
         self._player.seekableChanged.connect(self._on_seekable_changed)
         self._player.errorOccurred.connect(self._on_error)
 
-        volume = int(config.get("playback.volume", 65) or 0)
-        self._output.setVolume(max(0.0, min(1.0, volume / 100.0)))
         self._output.setMuted(bool(config.get("playback.muted", False)))
+        self._apply_output_volume()
         self._queue.mode = mode_from_name(config.get("playback.mode", "loop_list"))
+
+        if self._loudness is not None:
+            # 后台分析出结果后，如果正是当前这首，就把增益平滑接上去
+            self._loudness.measured.connect(self._on_loudness_measured)
+            self._emitter.analysisReady.connect(self._on_analysis_ready)
+
+    @staticmethod
+    def _read_user_volume(config: Config) -> int:
+        try:
+            return max(0, min(100, int(config.get("playback.volume", 65) or 0)))
+        except (TypeError, ValueError):
+            return 65
 
     # ── QML 属性 ────────────────────────────────────────────
 
@@ -242,7 +276,22 @@ class PlayerEngine(QObject):
 
     @Property(int, notify=volumeChanged)
     def volume(self) -> int:
-        return int(round(self._output.volume() * 100))
+        """**用户**音量（0~100）。
+
+        注意不是 ``QAudioOutput`` 上的实际音量：那个值还被淡入淡出与
+        音量均衡乘过，拿它当滑块位置会让界面自己乱跳。
+        """
+        return int(self._user_volume)
+
+    @Property(str, notify=gainChanged)
+    def gainLabel(self) -> str:  # noqa: N802
+        """当前曲目的均衡增益说明（如 ``-3.5 dB（实测 · 响度 -10.5 LUFS · 全曲）``）。"""
+        if self._loudness is None or self._current is None:
+            return ""
+        try:
+            return str(self._loudness.describe(self._current) or "")
+        except Exception:
+            return ""
 
     @Property(bool, notify=mutedChanged)
     def muted(self) -> bool:
@@ -368,7 +417,8 @@ class PlayerEngine(QObject):
         self._position_ms = 0
         self._playing = False
         self._paused = False
-        self._output.setVolume(self._volume_ratio())
+        self._fade_factor = 1.0
+        self._apply_output_volume()
         self.positionChanged.emit()
         self.playingChanged.emit()
         self.pausedChanged.emit()
@@ -417,9 +467,10 @@ class PlayerEngine(QObject):
     @Slot(int)
     def setVolume(self, value: int) -> None:  # noqa: N802
         v = max(0, min(100, int(value)))
-        if self._fade_timer.isActive():
-            self._fade_timer.stop()
-        self._output.setVolume(v / 100.0)
+        self._user_volume = v
+        # 不打断正在进行的淡入淡出：滑块改的是「用户音量」这一项，
+        # 淡入淡出乘的是另一项，两者本来就可以同时生效
+        self._apply_output_volume()
         if v > 0 and self._output.isMuted():
             self._output.setMuted(False)
             self.mutedChanged.emit()
@@ -502,6 +553,7 @@ class PlayerEngine(QObject):
         self._queue.clear()
         self._current = None
         self._requested = None
+        self._set_track_gain(None)
         self.trackChanged.emit()
 
     @Slot("QVariant")
@@ -534,10 +586,174 @@ class PlayerEngine(QObject):
         t = self._queue.at(idx) if idx is not None else None
         return t.to_dict() if t else None
 
-    # ── 内部：加载与播放 ────────────────────────────────────
+    # ── 内部：音量合成 ──────────────────────────────────────
 
     def _volume_ratio(self) -> float:
-        return max(0.0, min(1.0, int(self._config.get("playback.volume", 65) or 0) / 100.0))
+        """用户音量（线性）。"""
+        return max(0.0, min(1.0, self._user_volume / 100.0))
+
+    def _apply_output_volume(self) -> None:
+        """把三个音量因子乘起来交给 ``QAudioOutput``。
+
+        ``QAudioOutput`` 只接受 0.0~1.0，所以「均衡增益 + 用户音量」超过 1 时
+        会被夹住 —— 这正是峰值防削波之外的最后一层保护（见 README 的已知限制：
+        用户音量拉满时，需要抬升的曲目抬不到位）。
+        """
+        value = self._volume_ratio() * self._fade_factor * self._gain_ratio
+        self._output.setVolume(max(0.0, min(1.0, value)))
+
+    def _set_track_gain(self, track, *, ramp: bool = False) -> None:
+        """接上当前曲目的均衡增益。
+
+        ``ramp=True`` 时用短斜坡过渡（分析结果通常在中途才到，硬切会有
+        明显的响度台阶）；换曲时不用斜坡 —— 那时正好在淡入，听不出来。
+        """
+        ratio = 1.0
+        if self._loudness is not None and track is not None:
+            try:
+                ratio = float(self._loudness.gain_ratio(track))
+            except Exception as e:
+                logger.debug("读取均衡增益失败: %s", e)
+                ratio = 1.0
+        ratio = max(0.0, min(4.0, ratio))
+        if abs(ratio - self._gain_target) < 1e-4:
+            return
+        self._gain_target = ratio
+        if ramp and self._playing and self._fade_timer.isActive() is False:
+            self._gain_from = self._gain_ratio
+            self._gain_step = 0
+            self._gain_timer.start()
+        else:
+            self._gain_timer.stop()
+            self._gain_ratio = ratio
+            self._apply_output_volume()
+        self.gainChanged.emit()
+
+    def _gain_tick(self) -> None:
+        """增益斜坡：在 dB 域线性插值（倍数域线性会让听感先快后慢）。"""
+        self._gain_step += 1
+        ratio = min(1.0, self._gain_step / GAIN_RAMP_STEPS)
+        start = max(1e-6, self._gain_from)
+        end = max(1e-6, self._gain_target)
+        self._gain_ratio = start * (end / start) ** ratio
+        if self._gain_step >= GAIN_RAMP_STEPS:
+            self._gain_timer.stop()
+            self._gain_ratio = end
+        self._apply_output_volume()
+
+    @Slot(str, object)
+    def _on_loudness_measured(self, uid: str, _measurement) -> None:
+        """后台分析出结果：如果正是当前这首，把增益接上去。"""
+        if self._current is None or self._current.uid != uid:
+            return
+        # 切歌瞬间可能正好在淡入，这时硬切也听不出来，但斜坡更稳妥
+        self._set_track_gain(self._current, ramp=self._playing)
+    # ── 内部：均衡分析 ──────────────────────────────────────
+
+    def _request_analysis(self, track, target: str = "", is_local: bool = False) -> None:
+        """排一次响度分析（当前曲目优先），并预取队列里的下一首。"""
+        if self._loudness is None or track is None:
+            return
+        try:
+            self._loudness.request(track, target=target, is_local=is_local, focus=True)
+        except Exception as e:
+            logger.debug("排入响度分析失败: %s", e)
+        self._prefetch_next_analysis()
+
+    def _prefetch_next_analysis(self) -> None:
+        """预取「下一首」的响度：等它真的开始播时增益已经就绪，不用先响一下再压下去。
+
+        在线曲目要先解析出播放地址 —— 那是网络请求，放到普通线程里做，
+        解析完再回主线程排入分析（分析服务只在主线程碰 Qt 对象）。
+        """
+        if self._loudness is None:
+            return
+        try:
+            idx = self._queue.next_index(auto_advance=True)
+            track = self._queue.at(idx) if idx is not None else None
+            if track is None:
+                return
+            path = str(getattr(track, "path", "") or "")
+            if getattr(track, "is_local", False) and path:
+                self._loudness.prefetch(track, target=path, is_local=True)
+                return
+            threading.Thread(
+                target=self._analysis_resolve_worker, args=(track,),
+                daemon=True, name="prefetch-analysis",
+            ).start()
+        except Exception as e:
+            logger.debug("预取响度分析失败: %s", e)
+
+    def _analysis_resolve_worker(self, track) -> None:
+        """（工作线程）只做「曲目 → 播放地址」，不碰任何 Qt 对象。"""
+        resolved = self._resolve_for_analysis(track)
+        target, is_local = resolved if resolved else ("", False)
+        self._emitter.analysisReady.emit(track, target, bool(is_local))
+
+    @Slot(object, str, bool)
+    def _on_analysis_ready(self, track, target: str, is_local: bool) -> None:
+        """（主线程）预取解析回来了 → 排入分析。"""
+        if self._loudness is None or track is None or not target:
+            return
+        try:
+            self._loudness.prefetch(track, target=target, is_local=is_local)
+        except Exception as e:
+            logger.debug("预取排入失败: %s", e)
+
+    def _resolve_for_analysis(self, track):
+        """把曲目解析成可分析的目标（工作线程里调用）。
+
+        只做「同源解析」不跨源兜底：兜底会去别的平台搜一遍，为了分析多打
+        一轮请求不划算。已经在媒体缓存里的话会直接命中本地文件，那样连流量都省了。
+        """
+        if track is None:
+            return None
+        if getattr(track, "is_local", False) and getattr(track, "path", ""):
+            return (str(track.path), True)
+        quality = self._config.get("playback.quality", "320k") or "320k"
+        cache_media = bool(self._config.get("storage.cache_media", False))
+        try:
+            resolved = resolve(track, quality, allow_fallback=False, cache_media=cache_media)
+        except Exception as e:
+            logger.debug("分析用解析失败 %s: %s", getattr(track, "uid", ""), e)
+            return None
+        if resolved is None:
+            return None
+        return (resolved.target, bool(resolved.is_local))
+
+    # ── 内部：淡入淡出 ──────────────────────────────────────
+
+    def _fade_in(self) -> None:
+        if self._user_volume <= 0:
+            return
+        self._fade_factor = 0.0
+        self._fade_step = 0
+        self._fade_dir = 1
+        self._apply_output_volume()
+        self._fade_timer.start()
+
+    def _pause_with_fade(self) -> None:
+        if self._player.playbackState() != QMediaPlayer.PlayingState:
+            return
+        self._fade_step = FADE_STEPS
+        self._fade_dir = -1
+        self._fade_timer.start()
+
+    def _fade_tick(self) -> None:
+        if self._fade_dir > 0:
+            self._fade_step += 1
+            self._fade_factor = min(1.0, self._fade_step / FADE_STEPS)
+            if self._fade_step >= FADE_STEPS:
+                self._fade_timer.stop()
+                self._fade_factor = 1.0
+        else:
+            self._fade_step -= 1
+            self._fade_factor = max(0.0, self._fade_step / FADE_STEPS)
+            if self._fade_step <= 0:
+                self._fade_timer.stop()
+                self._player.pause()
+                self._fade_factor = 0.0
+        self._apply_output_volume()
 
     def _next_pending_seek(self, track: Track) -> Optional[int]:
         """这次加载要从哪儿开始放。
@@ -586,6 +802,9 @@ class PlayerEngine(QObject):
         self._lyrics.clear()
         self._lyric_index = -1
         self._loading = True
+        # 命中缓存时立刻就是正确的增益；没有缓存则先按 0 dB 起播，
+        # 后台分析出结果后再用斜坡接上（见 _on_loudness_measured）
+        self._set_track_gain(track)
 
         self.trackChanged.emit()
         self.durationChanged.emit()
@@ -655,6 +874,12 @@ class PlayerEngine(QObject):
         self.trackChanged.emit()
         self.favoriteChanged.emit()
         self.favoriteStateChanged.emit()
+
+        # 跨源兜底时 _current 换成了另一首，增益要跟着换；
+        # 同时把「刚解析出来的地址」交给分析服务（在线曲目不必再解析一次）
+        self._set_track_gain(self._current)
+        self._request_analysis(self._current, target=resolved.target,
+                               is_local=bool(resolved.is_local))
 
     # ── 内部：歌词 ──────────────────────────────────────────
 
@@ -835,43 +1060,6 @@ class PlayerEngine(QObject):
             self._session_ticks = 0
             self.saveSession()
 
-    # ── 内部：淡入淡出 ──────────────────────────────────────
-
-    def _fade_in(self) -> None:
-        target = self._volume_ratio()
-        if target <= 0:
-            return
-        self._output.setVolume(0.0)
-        self._fade_step = 0
-        self._fade_target = target
-        self._fade_dir = 1
-        self._fade_timer.start()
-
-    def _pause_with_fade(self) -> None:
-        if self._player.playbackState() != QMediaPlayer.PlayingState:
-            return
-        self._fade_step = FADE_STEPS
-        self._fade_target = 0.0
-        self._fade_dir = -1
-        self._fade_timer.start()
-
-    def _fade_tick(self) -> None:
-        if self._fade_dir > 0:
-            self._fade_step += 1
-            ratio = min(1.0, self._fade_step / FADE_STEPS)
-            self._output.setVolume(self._fade_target * ratio)
-            if self._fade_step >= FADE_STEPS:
-                self._fade_timer.stop()
-                self._output.setVolume(self._fade_target)
-        else:
-            self._fade_step -= 1
-            ratio = max(0.0, self._fade_step / FADE_STEPS)
-            self._output.setVolume(self._fade_target * ratio)
-            if self._fade_step <= 0:
-                self._fade_timer.stop()
-                self._player.pause()
-                self._output.setVolume(self._fade_target)
-
     def _resume(self) -> None:
         self._player.play()
         self._fade_in()
@@ -927,6 +1115,9 @@ class PlayerEngine(QObject):
         self._resume_ms = self._clamp_resume(saved.position_ms)
         self._resume_uid = track.uid if self._resume_ms > 0 else ""
         self._position_ms = self._resume_ms
+        # 会话恢复出来的曲目还没解析地址，先把缓存里的均衡增益摆上
+        # （没分析过的这首会在真正播放时才排入队列）
+        self._set_track_gain(track)
 
         self.trackChanged.emit()
         self.durationChanged.emit()
@@ -966,12 +1157,15 @@ class PlayerEngine(QObject):
         self._session_timer.stop()
         self.saveSession()
         self._fade_timer.stop()
+        self._gain_timer.stop()
         self._progress_timer.stop()
         try:
             self._player.stop()
         except Exception:
             pass
-        self._config.set("playback.volume", self.volume)
+        # 存的是**用户音量**，不是 QAudioOutput 上的实际音量（后者被
+        # 淡入淡出与均衡增益乘过，存下来下次启动就跑了）
+        self._config.set("playback.volume", int(self._user_volume))
         self._config.set("playback.muted", self.muted)
 
 def _coerce_track(value: Any) -> Optional[Track]:

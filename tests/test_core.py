@@ -1211,6 +1211,507 @@ def test_track_reason_is_transient():
     assert again.name == "歌"
 
 
+# ──────────────────────────────────────────────────────────────
+# 音量均衡：响度测算（EBU R128 / BS.1770-4）
+# ──────────────────────────────────────────────────────────────
+
+
+def _sine(amplitude: float, freq: float = 1000.0, seconds: float = 5.0, rate: int = 8000):
+    import math
+
+    return [amplitude * math.sin(2 * math.pi * freq * i / rate)
+            for i in range(int(seconds * rate))]
+
+
+def test_loudness_filters_match_bs1770():
+    """48 kHz 的 K 加权系数必须与 BS.1770-4 附录给的值一致。
+
+    这张系数表是整个功能的地基：算错了不会崩，只会让「均衡」变成
+    「所有歌都朝同一个方向偏」。标准值与自研公式对得上，才敢在其它采样率
+    上用同一套模拟原型去现算。
+    """
+    from app.core import loudness as L
+
+    rlb, shelf = L.k_weighting_coeffs(48000)
+    reference_shelf = (1.53512485958697, -2.69169618940638, 1.19839281085285,
+                       -1.69065929318241, 0.73248077421585)
+    reference_rlb = (1.0, -2.0, 1.0, -1.99004745483398, 0.99007225036621)
+    for mine, want in ((shelf, reference_shelf), (rlb, reference_rlb)):
+        for got, expected in zip(mine, want):
+            assert abs(got - expected) < 2e-6, (got, expected)
+
+    # 高通级：b 恒为 [1, -2, 1]（整份实现的口径，改了就不是 BS.1770 了）
+    assert abs(rlb[0] - 1.0) < 1e-9 and abs(rlb[1] + 2.0) < 1e-9
+
+    # 8 kHz 上同样设计得出来（解码器给的就是这个采样率）
+    rlb8, shelf8 = L.k_weighting_coeffs(8000)
+    assert all(abs(c) < 10 for c in rlb8 + shelf8)
+
+
+def test_loudness_known_signals():
+    """已知信号的积分响度必须落在标准口径上。
+
+    立体声正弦（每声道幅度 A）的响度 ≈ 20lg(A) + 10lg(2) - 0.691 + K加权，
+    1 kHz 附近 K 加权约 0 dB，所以 -20 dBFS 的立体声正弦约为 -20 LUFS。
+    """
+    from app.core import loudness as L
+
+    mono = _sine(0.1)
+    stereo = L.analyze([mono, mono], 8000)
+    assert abs(stereo.loudness_lufs - (-19.99)) < 0.25, stereo.loudness_lufs
+
+    # 单声道同一信号比立体声低 3.01 dB —— 这正是「先混单再算」那个坑
+    single = L.analyze(mono, 8000)
+    assert abs((stereo.loudness_lufs - single.loudness_lufs) - 3.0103) < 0.05, (
+        stereo.loudness_lufs, single.loudness_lufs)
+
+
+def test_loudness_gating_uses_energy_domain():
+    """相对门限必须在**能量域**取平均（BS.1770-4 式 5/6）。
+
+    先响 4 秒、再轻 20 dB 响 8 秒：把各块的 dB 值直接算术平均的话，门限会掉到
+    -43 dB，轻的那段也被算进去（约 -24.7 LUFS）；按标准（各块均方先平均）
+    门限是 -30 dB 出头，轻的那段被挡掉，结果是 -20.2 LUFS。差 4.5 LU，
+    听感上就是「安静段落把整首歌的增益带偏」。
+    """
+    from app.core import loudness as L
+
+    rate = 8000
+    loud = _sine(0.1, seconds=4.0, rate=rate)
+    quiet = _sine(0.01, seconds=8.0, rate=rate)
+    mixed = loud + quiet
+    result = L.analyze([mixed, mixed], rate)
+    assert abs(result.loudness_lufs - (-20.16)) < 0.35, result.loudness_lufs
+    assert result.blocks > result.gated_blocks      # 轻的那段确实被门限挡掉了
+
+
+def test_loudness_handles_degenerate_input():
+    """静音 / 空 / 太短 / NaN 都不能算出「一个看起来正常的增益」。"""
+    from app.core import loudness as L
+
+    assert L.analyze([], 8000).loudness_lufs is None
+    assert L.analyze([0.0] * 40000, 8000).loudness_lufs is None      # 静音
+    assert L.analyze([0.5] * 100, 8000).loudness_lufs is None        # 太短（<100ms）
+
+    # 200 ms 的短促信号仍应测得出来（铃声、试听片段的兜底路径）。
+    # 这一段守的是分块兜底里的一个真 bug：200 ms 正好凑满两个 100 ms 段，
+    # 零头是空的 —— 只统计「没满一段的那部分」会把整段已经收尾的能量漏掉，
+    # 于是一个响亮的短音被算成「一个样本都没有」。
+    short = L.analyze(_sine(0.3, seconds=0.2), 8000)
+    assert short.loudness_lufs is not None and short.measurable
+    assert short.loudness_lufs < 0, short.loudness_lufs
+    # 50 ms（不足 MIN_BLOCK_SECONDS）仍然判成测不出来
+    assert L.analyze(_sine(0.3, seconds=0.05), 8000).loudness_lufs is None
+
+    # NaN / inf 就地归零：峰值被忽略，响度不受污染
+    dirty = L.analyze([float("nan"), float("inf")] + _sine(0.2), 8000)
+    assert dirty.loudness_lufs is not None
+    assert abs(dirty.peak - 0.2) < 0.02, dirty.peak
+
+
+def test_loudness_streaming_matches_batch():
+    """分块喂样本（解码器就是一块一块给的）与一次性分析必须一致。"""
+    from app.core import loudness as L
+
+    signal = _sine(0.25, seconds=3.0)
+    whole = L.analyze([signal, signal], 8000)
+
+    meter = L.LoudnessMeter(8000, channels=2)
+    chunk = 997          # 故意不是 100ms 的整数倍，考验分块对齐
+    for start in range(0, len(signal), chunk):
+        piece = signal[start:start + chunk]
+        meter.feed([piece, piece])
+    streamed = meter.result()
+
+    assert abs(streamed.loudness_lufs - whole.loudness_lufs) < 0.01, (
+        streamed.loudness_lufs, whole.loudness_lufs)
+    assert abs(streamed.peak - whole.peak) < 1e-9
+
+
+def test_gain_db_rules():
+    """增益的三道约束：目标响度、防削波、上下限。"""
+    import math
+
+    from app.core import loudness as L
+
+    # 目标响度：-10 LUFS 的曲子、目标 -14 → -4 dB
+    assert abs(L.gain_db(-10.0, 1.0, peak_ceiling=2.0) - (-4.0)) < 1e-6
+    # 防削波优先：峰值 0.9 时最多只能加 20lg(0.891/0.9)（是个负数）
+    limited = L.gain_db(-30.0, 0.9)
+    assert abs(limited - 20 * math.log10(0.891 / 0.9)) < 1e-6
+    # 偏轻的曲子允许抬升
+    assert abs(L.gain_db(-22.0, 0.3) - 8.0) < 1e-6
+    # 不允许抬升时最多到 0 dB
+    assert L.gain_db(-22.0, 0.3, allow_boost=False) == 0.0
+    # 上下限夹紧
+    assert L.gain_db(-60.0, 0.05) == L.DEFAULT_MAX_GAIN_DB
+    assert L.gain_db(10.0, 1.0) == L.DEFAULT_MIN_GAIN_DB
+    # 未知响度 / 未知峰值：一律不处理，绝不瞎猜
+    assert L.gain_db(None, 0.5) == 0.0
+    assert L.gain_db(-20.0, 0.0) == 0.0
+    # dB ↔ 倍数
+    assert abs(L.db_to_ratio(-6.0206) - 0.5) < 1e-4
+    assert abs(L.ratio_to_db(0.5) - (-6.0206)) < 1e-4
+    assert L.describe_gain(0.0) == "不调整"
+    assert "dB" in L.describe_gain(-3.5)
+
+
+# ──────────────────────────────────────────────────────────────
+# 音量均衡：测量缓存
+# ──────────────────────────────────────────────────────────────
+
+
+def test_loudness_store_roundtrip_and_ttl():
+    """缓存要能落盘读回，失败条目要有重试窗口，音源兜底要够样本才给值。"""
+    import time
+
+    from app.core import loudness_store as S
+
+    tmp = Path(tempfile.mkdtemp(prefix="fusion_loudness_"))
+    store = S.LoudnessStore(tmp / "loudness.json")
+
+    store.put(S.Measurement(uid="wy:1", loudness_lufs=-10.0, peak=1.0, seconds=180.0,
+                            partial=False, source="wy", method=S.METHOD_DECODE, ok=True))
+    assert store.save(force=True) is True
+
+    loaded = S.LoudnessStore(tmp / "loudness.json").get("wy:1")
+    assert loaded is not None and abs(loaded.loudness_lufs + 10.0) < 1e-9
+    assert loaded.partial is False and loaded.source == "wy"
+
+    # 版本不符 → 整份作废（算法换了口径必须重算）
+    (tmp / "loudness.json").write_text(
+        json.dumps({"version": S.CACHE_VERSION - 1, "entries": {"wy:1": {}}}),
+        encoding="utf-8")
+    assert S.LoudnessStore(tmp / "loudness.json").size == 0
+
+    # 失败条目：未过期时视为「已有结论」（不反复重试），过期后当作没有
+    store = S.LoudnessStore(tmp / "loudness2.json")
+    store.put(S.Measurement.failure("wy:2", source="wy"))
+    assert store.get("wy:2") is not None
+    store.put(S.Measurement(uid="wy:3", loudness_lufs=None, peak=0.0, ok=False,
+                            source="wy", at=time.time() - S.FAILURE_TTL_SECONDS - 10))
+    assert store.get("wy:3") is None
+    assert store.get("wy:3", retry_failed=False) is not None
+
+    # 音源兜底：样本不足不给值，够了给中位数并夹紧
+    for i in range(4):
+        store.put(S.Measurement(uid=f"kw:{i}", loudness_lufs=-20.0, peak=0.2,
+                                partial=False, source="kw", ok=True))
+    assert store.source_offset_db("kw") == 0.0            # 只有 4 个样本
+    for i in range(4, 11):
+        store.put(S.Measurement(uid=f"kw:{i}", loudness_lufs=-20.0, peak=0.2,
+                                partial=False, source="kw", ok=True))
+    offset = store.source_offset_db("kw")
+    assert 0 < offset <= S.SOURCE_OFFSET_LIMIT_DB, offset
+    assert store.source_offset_db("") == 0.0
+
+    stats = store.stats()
+    assert stats["measured"] >= 11 and stats["failed"] >= 1
+    assert S.parse_replaygain_tag("-7.25 dB") == -7.25
+    assert S.parse_replaygain_tag("") is None
+    assert S.parse_replaygain_tag("不是数字") is None
+    assert store.clear() > 0 and store.size == 0
+
+
+def test_gain_db_for_uses_stricter_ceiling_when_partial():
+    """只分析了前一段时（流媒体）峰值上限要更保守。"""
+    from app.core import loudness as L
+    from app.core import loudness_store as S
+
+    full = S.Measurement(uid="a", loudness_lufs=-20.0, peak=0.95, partial=False, ok=True)
+    part = S.Measurement(uid="b", loudness_lufs=-20.0, peak=0.95, partial=True, ok=True)
+    full_gain, part_gain = S.gain_db_for(full), S.gain_db_for(part)
+    assert full_gain > part_gain, (full_gain, part_gain)
+    assert abs(full_gain - L.gain_db(-20.0, 0.95, peak_ceiling=L.DEFAULT_PEAK_CEILING)) < 1e-9
+    assert abs(part_gain - L.gain_db(-20.0, 0.95, peak_ceiling=L.PARTIAL_PEAK_CEILING)) < 1e-9
+    # 没有测量值 / 测量失败 → 0 dB
+    assert S.gain_db_for(None) == 0.0
+    assert S.gain_db_for(S.Measurement.failure("c")) == 0.0
+
+
+# ──────────────────────────────────────────────────────────────
+# 自动更新：版本、资产、摘要
+# ──────────────────────────────────────────────────────────────
+
+
+def _release_payload(tag="v1.1.0", assets=None, prerelease=False):
+    return {
+        "tag_name": tag,
+        "name": tag,
+        "body": "## 说明\n\n| 平台 | 文件 |\n|--|--|\n| win | a.zip |\n\n正文",
+        "html_url": f"https://github.com/Janson20/FusionMusicPlayer/releases/tag/{tag}",
+        "published_at": "2026-01-02T03:04:05Z",
+        "prerelease": prerelease,
+        "assets": assets if assets is not None else [
+            {"name": "FusionMusicPlayer-1.1.0-win-x64.zip",
+             "browser_download_url": "https://github.com/x/releases/download/v1.1.0/a.zip",
+             "size": 1024, "digest": "sha256:" + "a" * 64},
+            {"name": "FusionMusicPlayer-1.1.0-win-x64.exe",
+             "browser_download_url": "https://github.com/x/releases/download/v1.1.0/a.exe",
+             "size": 2048, "digest": "sha256:" + "b" * 64},
+        ],
+    }
+
+
+def test_version_parse_and_compare():
+    """版本号解析与比较：预发布永远小于同号正式版。"""
+    from app.core import updater as U
+
+    assert U.parse_version("v1.2.3") == (1, 2, 3, "")
+    assert U.parse_version("1.2.3-beta.1") == (1, 2, 3, "beta.1")
+    assert U.parse_version("0.0.0-dev") == (0, 0, 0, "dev")
+    assert U.parse_version("不是版本号") is None
+    assert U.parse_version("") is None
+
+    assert U.is_newer("1.0.7", "1.0.6") is True
+    assert U.is_newer("1.1.0", "1.0.6") is True
+    assert U.is_newer("1.0.6", "1.0.6") is False
+    assert U.is_newer("1.0.5", "1.0.6") is False
+    assert U.is_newer("1.2.0", "1.2.0-rc1") is True     # 正式版 > 预发布
+    assert U.is_newer("1.2.0-rc1", "1.2.0") is False
+    assert U.compare_versions("1.0.6", "dev") is None
+    # 解析不了时一律「不更新」，绝不因为看不懂就去下载
+    assert U.is_newer("最新版", "1.0.6") is False
+    assert U.is_newer("1.0.7", "dev") is False
+
+
+def test_pick_asset_by_install_kind():
+    """按发行形态选资产：便携版要 zip，单文件版要 exe。"""
+    from app.core import updater as U
+
+    release = U.parse_release(_release_payload())
+    assert release is not None and release.version == "1.1.0"
+    assert release.prerelease is False and len(release.assets) == 2
+
+    assert release.asset_for(U.KIND_ONEDIR).name.endswith(".zip")
+    assert release.asset_for(U.KIND_ONEFILE).name.endswith(".exe")
+    # 源码运行不给资产（界面会引导去发布页）
+    assert release.asset_for(U.KIND_SOURCE) is None
+
+    # 命名对不上时按后缀退让，而不是随便挑一个
+    odd = U.parse_release(_release_payload(tag="v2.0.0", assets=[
+        {"name": "something-win-x64.zip", "browser_download_url": "https://github.com/a.zip",
+         "size": 1, "digest": "sha256:" + "c" * 64},
+    ]))
+    assert odd.asset_for(U.KIND_ONEDIR).name == "something-win-x64.zip"
+    assert odd.asset_for(U.KIND_ONEFILE) is None
+    assert U.pick_asset([], U.KIND_ONEDIR) is None
+
+
+def test_parse_release_rejects_foreign_assets_and_bad_tags():
+    """只接受 GitHub 自己的 https 地址；版本号解析不出来就当没有这次发布。"""
+    from app.core import updater as U
+
+    assert U.parse_release({"tag_name": "nightly"}) is None
+    assert U.parse_release({}) is None
+    assert U.parse_release(_release_payload(tag="不是版本")) is None
+    assert U.parse_release("不是字典") is None
+
+    mixed = U.parse_release(_release_payload(assets=[
+        {"name": "evil.exe", "browser_download_url": "http://evil.example.com/x.exe",
+         "size": 1, "digest": "sha256:" + "d" * 64},
+        {"name": "http.exe", "browser_download_url": "http://github.com/x.exe",
+         "size": 1, "digest": "sha256:" + "d" * 64},
+        {"name": "ok.exe", "browser_download_url": "https://github.com/x.exe",
+         "size": 1, "digest": "sha256:" + "d" * 64},
+    ]))
+    assert [a.name for a in mixed.assets] == ["ok.exe"]
+
+    assert U.url_allowed("https://github.com/a") is True
+    assert U.url_allowed("https://objects.githubusercontent.com/a") is True
+    assert U.url_allowed("https://github.com.evil.com/a") is False
+    assert U.url_allowed("http://github.com/a") is False
+    assert U.url_allowed("file:///etc/passwd") is False
+    assert U.url_allowed("") is False
+
+
+def test_digest_verification():
+    """下载完必须对上服务端给的 sha256；格式不对一律不认。"""
+    import hashlib
+
+    from app.core import updater as U
+
+    tmp = Path(tempfile.mkdtemp(prefix="fusion_upd_"))
+    target = tmp / "package.zip"
+    target.write_bytes(b"hello update")
+    good = "sha256:" + hashlib.sha256(b"hello update").hexdigest()
+
+    assert U.digest_matches(target, good) is True
+    assert U.digest_matches(target, "sha256:" + "0" * 64) is False
+    assert U.digest_matches(target, "") is False
+    assert U.digest_matches(target, "md5:abc") is False
+    assert U.sha256_file(target) == hashlib.sha256(b"hello update").hexdigest()
+
+    asset = U.ReleaseAsset(name="a.zip", url="https://github.com/a.zip", digest=good)
+    assert asset.sha256 == good.split(":")[1]
+    assert U.ReleaseAsset(name="a", url="", digest="").sha256 == ""
+    assert U.ReleaseAsset(name="a", url="", size=0).size_text == "未知大小"
+
+
+def test_install_kind_detection():
+    """发行形态判定：源码 / 便携版（_internal 同级）/ 单文件（_MEIxxxx 临时目录）。"""
+    import sys as _sys
+
+    from app.core import updater as U
+
+    saved = (getattr(_sys, "frozen", None), getattr(_sys, "_MEIPASS", None), _sys.executable)
+    try:
+        _sys.frozen = False                              # type: ignore[attr-defined]
+        assert U.install_kind() == U.KIND_SOURCE
+
+        exe = Path(tempfile.mkdtemp(prefix="fusion_kind_")) / "FusionMusicPlayer.exe"
+        exe.write_bytes(b"")
+        _sys.executable = str(exe)
+        _sys.frozen = True                               # type: ignore[attr-defined]
+        _sys._MEIPASS = str(exe.parent / "_internal")    # type: ignore[attr-defined]
+        assert U.install_kind() == U.KIND_ONEDIR
+
+        _sys._MEIPASS = str(Path(tempfile.gettempdir()) / "_MEI123456")  # type: ignore[attr-defined]
+        assert U.install_kind() == U.KIND_ONEFILE
+
+        # 没有 _MEIPASS 但已冻结：按目录版处理（替换方式一样）
+        del _sys._MEIPASS
+        assert U.install_kind() == U.KIND_ONEDIR
+    finally:
+        _sys.executable = saved[2]
+        for name, value in (("frozen", saved[0]), ("_MEIPASS", saved[1])):
+            if value is None:
+                try:
+                    delattr(_sys, name)
+                except AttributeError:
+                    pass
+            else:
+                setattr(_sys, name, value)
+
+
+def test_release_notes_excerpt_and_size():
+    """更新说明要能直接塞进界面：去掉下载表格、截断超长内容。"""
+    from app.core import updater as U
+
+    text = U.release_notes_excerpt(_release_payload()["body"])
+    assert "## 说明" in text and "正文" in text
+    assert "|" not in text and "a.zip" not in text
+
+    excerpt = U.release_notes_excerpt("\n".join(f"第 {i} 行" for i in range(500)), limit=100)
+    assert len(excerpt) <= 101 and excerpt.endswith("…")
+    assert U.release_notes_excerpt("") == ""
+
+    assert U.human_size(0) == "未知大小"
+    assert U.human_size(512) == "512 B"
+    assert U.human_size(2048) == "2.0 KB"
+    assert U.human_size(96 * 1024 * 1024) == "96.0 MB"
+
+
+# ──────────────────────────────────────────────────────────────
+# 自动更新：暂存与替换脚本
+# ──────────────────────────────────────────────────────────────
+
+
+def test_update_script_never_touches_user_data():
+    """替换脚本必须：等旧进程退出、排除 data、失败回滚、按形态分支。"""
+    from app.core import update_install as I
+
+    script = I.build_script()
+    assert "@@" not in script, "还有没替换掉的占位符"
+    assert "'/XD', 'data'" in script, "备份与覆盖都必须排除 data 目录"
+    assert "$DataDir" in script
+    # 备份目录本身也在 data/updates 里：不排除它的话 robocopy 会自己喂自己
+    assert "Invoke-Robocopy $InstallDir $BackupDir @('/XD', 'data', $DataDir, $BackupDir, $StagingDir)" in script
+    assert "Get-Process -Id $AppPid" in script, "必须等旧进程退出（否则 exe 换不掉）"
+    assert "robocopy" in script.lower()
+    assert "Start-Process" in script
+    assert "回滚" in script
+    assert "$Mode -eq 'onefile'" in script and "Invoke-Robocopy $StagingDir $InstallDir" in script
+    # 脚本自己不能躺在会被覆盖的位置
+    assert "apply_update.ps1" == I.SCRIPT_NAME
+
+    # 下面三条都是**真机跑脚本才暴露出来**的坑，别让它们被改回去：
+    # 1) robocopy 默认跳过「大小与时间戳都一样」的文件，更新必须带 /IS 强制覆盖；
+    assert "'/IS'" in script, "覆盖步骤必须带 /IS，否则同大小同时间的文件会被静默跳过"
+    # 2) 只看 robocopy 退出码不够（目录/文件冲突时它会跳过而不报错），
+    #    覆盖完必须逐文件核对；
+    assert "Test-StagedTree" in script and "替换结果已校验" in script
+    # 3) 坏包必须在**动任何文件之前**就被拒掉，而不是替换到一半再回滚。
+    assert "放弃更新（程序文件未做任何改动）" in script
+    # 4) 日志目录可能还不存在，Write-Log 要自己建（否则失败原因一个字都留不下）。
+    assert "Split-Path -Parent $LogFile" in script
+
+
+def test_stage_zip_rejects_path_traversal():
+    """解压要防目录穿越，而且必须真的看到可执行文件才算暂存成功。"""
+    import zipfile
+
+    from app.core import update_install as I
+
+    tmp = Path(tempfile.mkdtemp(prefix="fusion_stage_"))
+
+    evil = tmp / "evil.zip"
+    with zipfile.ZipFile(evil, "w") as z:
+        z.writestr("../escaped.txt", "bad")
+        z.writestr("FusionMusicPlayer.exe", "MZ")
+    staging = I.stage_release(evil, "onedir", tmp / "stage1")
+    assert not (tmp / "escaped.txt").exists(), "目录穿越没被挡住"
+    assert (staging / "FusionMusicPlayer.exe").exists()
+    assert I.find_staged_exe(staging) is not None
+
+    empty = tmp / "empty.zip"
+    with zipfile.ZipFile(empty, "w") as z:
+        z.writestr("readme.txt", "nothing here")
+    try:
+        I.stage_release(empty, "onedir", tmp / "stage2")
+        raise AssertionError("没有 exe 的包不该被接受")
+    except RuntimeError as e:
+        assert "可执行文件" in str(e)
+
+    # 单文件形态：资产本身就是 exe，原样搬到暂存目录
+    exe = tmp / "FusionMusicPlayer-2.0.0-win-x64.exe"
+    exe.write_bytes(b"MZ")
+    staging = I.stage_release(exe, "onefile", tmp / "stage3")
+    assert (staging / I.STAGED_EXE_NAME).exists()
+
+    # 源码运行不支持暂存
+    try:
+        I.stage_release(exe, "source", tmp / "stage4")
+        raise AssertionError("源码运行不该走暂存")
+    except RuntimeError:
+        pass
+
+
+def test_can_auto_install_explains_itself():
+    """不能自动安装时，必须给得出人话原因（界面要显示给用户）。"""
+    from app.core import update_install as I
+    from app.core import updater as U
+
+    ok, reason = I.can_auto_install(U.KIND_SOURCE)
+    assert ok is False and "源码" in reason
+    # 测试进程本身不是打包版本，所以这里也应当拒绝并给出原因
+    ok, reason = I.can_auto_install(U.KIND_ONEDIR)
+    assert ok is False and reason
+
+
+def test_pending_marker_roundtrip():
+    """更新标记：写 → 读 → 清，用来判断上次升级到底成没成。"""
+    import os
+
+    from app.core import update_install as I
+
+    home = tempfile.mkdtemp(prefix="fusion_pending_")
+    saved = os.environ.get("FUSION_MUSIC_HOME")
+    os.environ["FUSION_MUSIC_HOME"] = home
+    try:
+        assert I.read_pending() is None
+        assert I.write_pending({"from": "1.0.6", "to": "1.1.0", "kind": "onedir"}) is True
+        data = I.read_pending()
+        assert data is not None and data["to"] == "1.1.0" and data["at"] > 0
+        I.clear_pending()
+        assert I.read_pending() is None
+    finally:
+        if saved is None:
+            os.environ.pop("FUSION_MUSIC_HOME", None)
+        else:
+            os.environ["FUSION_MUSIC_HOME"] = saved
+
+
 if __name__ == "__main__":
     import traceback
 

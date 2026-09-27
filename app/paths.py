@@ -128,6 +128,16 @@ def session_file() -> Path:
     return data_dir() / "session.json"
 
 
+def loudness_file() -> Path:
+    """响度测算缓存（音量均衡用），见 :mod:`app.core.loudness_store`。"""
+    return data_dir() / "loudness.json"
+
+
+def updates_dir() -> Path:
+    """自动更新的下载与暂存目录，见 :mod:`app.core.updater`。"""
+    return data_dir() / "updates"
+
+
 def log_dir() -> Path:
     return data_dir() / "logs"
 

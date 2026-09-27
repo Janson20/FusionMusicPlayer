@@ -332,6 +332,91 @@ FluWindow {
                         font.pixelSize: 11
                         color: Theme.textTertiary
                     }
+
+                    SectionHeader {
+                        Layout.fillWidth: true
+                        title: "音量均衡"
+                        subtitle: "按 EBU R128 实测每首曲目的响度，自动把音量拉齐"
+                    }
+                    SettingSwitch {
+                        objectName: "equalizeSwitch"
+                        label: "启用音量均衡"
+                        description: "后台分析曲目响度（约几秒一首，结果会缓存），播放时按增益调整；"
+                                     + "只做整曲响度对齐，不做动态压缩"
+                        checked: settings.equalize
+                        onToggled: function (value) { settings.setBool("audio.equalize", value) }
+                    }
+                    RowLayout {
+                        spacing: 12
+                        FluText {
+                            text: "目标响度"
+                            font.pixelSize: 12
+                            color: Theme.textSecondary
+                        }
+                        FluComboBox {
+                            objectName: "targetLufsBox"
+                            Layout.preferredWidth: 260
+                            enabled: settings.equalize
+                            model: {
+                                var names = []
+                                var opts = settings.targetLufsOptions
+                                for (var i = 0; i < opts.length; i++)
+                                    names.push(opts[i].name)
+                                return names
+                            }
+                            currentIndex: {
+                                var opts = settings.targetLufsOptions
+                                for (var i = 0; i < opts.length; i++)
+                                    if (opts[i].id === settings.targetLufs) return i
+                                return 2
+                            }
+                            onActivated: function (index) {
+                                settings.set("audio.target_lufs",
+                                             settings.targetLufsOptions[index].id)
+                            }
+                        }
+                    }
+                    SettingSwitch {
+                        label: "允许抬高偏轻的曲目"
+                        description: "关闭后只压低偏响的曲目、绝不抬升；开启时会按峰值留出余量防削波"
+                        checked: settings.allowBoost
+                        onToggled: function (value) { settings.setBool("audio.allow_boost", value) }
+                    }
+                    SettingSwitch {
+                        label: "预取下一首"
+                        description: "提前分析队列里的下一首，切歌时增益已经就绪（会多一次解析请求）"
+                        checked: settings.prefetchLoudness
+                        onToggled: function (value) { settings.setBool("audio.prefetch_next", value) }
+                    }
+                    SettingRow {
+                        label: "已分析曲目"
+                        value: settings.loudnessStats.measured + " 首"
+                               + (settings.loudnessStats.pending > 0
+                                  ? "（队列中 " + settings.loudnessStats.pending + " 首）" : "")
+                    }
+                    SettingRow {
+                        label: "平均响度"
+                        value: settings.loudnessStats.avgLoudness || "暂无数据"
+                    }
+                    SettingRow {
+                        label: "分析数据占用"
+                        value: settings.loudnessStats.size
+                    }
+                    RowLayout {
+                        spacing: 10
+                        FluText {
+                            Layout.fillWidth: true
+                            text: player.gainLabel ? ("当前曲目：" + player.gainLabel)
+                                                   : "当前曲目尚未分析，或音量均衡未开启"
+                            font.pixelSize: 11
+                            color: Theme.textTertiary
+                            wrapMode: Text.WordWrap
+                        }
+                        FluButton {
+                            text: "清除分析数据"
+                            onClicked: settings.clearLoudness()
+                        }
+                    }
                 }
 
                 // ═══ 音源 ═══════════════════════════════════
@@ -916,11 +1001,162 @@ FluWindow {
                     SettingRow { label: "我喜欢"; value: library.favoritesModel.count + " 首" }
                     SettingRow { label: "播放历史"; value: library.historyModel.count + " 条" }
 
+                    SectionHeader {
+                        Layout.fillWidth: true
+                        title: "更新"
+                        subtitle: "从 GitHub Releases 检查新版本"
+                    }
+                    SettingRow { label: "当前版本"; value: updater.currentVersion; copyable: true }
+                    SettingRow {
+                        label: "最新版本"
+                        value: updater.latestVersion
+                               ? (updater.latestVersion + (updater.publishedAt ? "（" + updater.publishedAt + "）" : ""))
+                               : "尚未检查"
+                    }
+                    SettingRow {
+                        label: "状态"
+                        value: updater.statusText || "未检查"
+                    }
+                    FluText {
+                        Layout.fillWidth: true
+                        visible: updater.errorText !== ""
+                        text: updater.errorText
+                        font.pixelSize: 11
+                        color: Theme.danger
+                        wrapMode: Text.WordWrap
+                    }
+                    ProgressBar {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 6
+                        visible: updater.state === "downloading" || updater.state === "installing"
+                        from: 0
+                        to: 1
+                        value: updater.progress
+                    }
+
+                    RowLayout {
+                        spacing: 10
+                        FluButton {
+                            objectName: "checkUpdateButton"
+                            text: updater.state === "checking" ? "检查中…" : "检查更新"
+                            enabled: !updater.busy
+                            onClicked: updater.checkNow()
+                        }
+                        FluButton {
+                            text: updater.state === "ready" ? "重新下载" : "下载更新"
+                            visible: updater.updateAvailable && updater.state !== "ready"
+                            enabled: !updater.busy && updater.canInstall
+                            onClicked: updater.download()
+                        }
+                        FluButton {
+                            text: "取消下载"
+                            visible: updater.state === "downloading"
+                            onClicked: updater.cancelDownload()
+                        }
+                        FluButton {
+                            objectName: "installUpdateButton"
+                            text: "立即安装并重启"
+                            visible: updater.ready
+                            enabled: updater.canInstall
+                            onClicked: updater.installAndRestart()
+                        }
+                        FluButton {
+                            text: "打开发布页"
+                            onClicked: updater.openReleasePage()
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
+                    FluText {
+                        Layout.fillWidth: true
+                        visible: updater.installHint !== ""
+                        text: updater.installHint
+                        font.pixelSize: 11
+                        color: Theme.textTertiary
+                        wrapMode: Text.WordWrap
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        visible: updater.releaseNotes !== ""
+                        spacing: 6
+                        FluText {
+                            text: "更新说明"
+                            font.pixelSize: 12
+                            font.weight: Font.DemiBold
+                            color: Theme.textPrimary
+                        }
+                        Flickable {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 150
+                            contentWidth: width
+                            contentHeight: notesText.height + 8
+                            clip: true
+                            boundsBehavior: Flickable.StopAtBounds
+                            ScrollBar.vertical: FluScrollBar { }
+                            FluText {
+                                id: notesText
+                                width: parent.width
+                                text: updater.releaseNotes
+                                font.pixelSize: 11
+                                color: Theme.textSecondary
+                                wrapMode: Text.WordWrap
+                            }
+                        }
+                    }
+
+                    SettingSwitch {
+                        objectName: "autoCheckUpdateSwitch"
+                        label: "自动检查更新"
+                        description: "启动后静默检查一次，并按下面的间隔定期检查；只提示，不会自动安装"
+                        checked: updater.autoCheck
+                        onToggled: function (value) { updater.setAutoCheck(value) }
+                    }
+                    RowLayout {
+                        spacing: 12
+                        FluText {
+                            text: "检查间隔"
+                            font.pixelSize: 12
+                            color: Theme.textSecondary
+                        }
+                        FluComboBox {
+                            Layout.preferredWidth: 180
+                            enabled: updater.autoCheck
+                            model: {
+                                var names = []
+                                var opts = updater.intervalOptions
+                                for (var i = 0; i < opts.length; i++)
+                                    names.push(opts[i].name)
+                                return names
+                            }
+                            currentIndex: {
+                                var opts = updater.intervalOptions
+                                for (var i = 0; i < opts.length; i++)
+                                    if (opts[i].id === updater.intervalHours) return i
+                                return 1
+                            }
+                            onActivated: function (index) {
+                                updater.setIntervalHours(updater.intervalOptions[index].id)
+                            }
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
+                    SettingSwitch {
+                        label: "包含预发布版本"
+                        description: "开启后连 beta / rc 一起提示（正式版优先）"
+                        checked: updater.includePrerelease
+                        onToggled: function (value) { updater.setIncludePrerelease(value) }
+                    }
+
                     RowLayout {
                         spacing: 10
                         FluButton {
                             text: "恢复默认设置"
                             onClicked: resetDialog.open()
+                        }
+                        FluButton {
+                            text: "打开更新日志"
+                            visible: updater.lastLogTail !== ""
+                            onClicked: updater.openUpdateLog()
                         }
                     }
                 }

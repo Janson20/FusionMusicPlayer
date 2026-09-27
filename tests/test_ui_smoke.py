@@ -744,9 +744,115 @@ class UiProbe(Application):
 
         self.guard(self.step_session_restore)
 
+        self.guard(self.step_equalize)
+        self.guard(self.step_updater)
+
         self.guard(self.step_tray)
 
         self.guard(self.step_signal_params)
+
+    # ── 音量均衡 ────────────────────────────────────────────
+    def step_equalize(self):
+        """音量均衡：音量滑块读的是**用户音量**，增益另算。
+
+        守的是这一条：``QAudioOutput.volume()`` 上那个值是「用户音量 × 淡入淡出
+        × 均衡增益」的乘积，滑块要是绑到它，播放中一分析出结果滑块就会自己跳。
+        """
+        import tempfile
+        from pathlib import Path
+
+        from app.core.loudness_store import Measurement
+        from app.core.models import Track
+
+        win = self.find(SETTINGS_TITLE)
+        if win is None:
+            check("均衡分区可检查", False, "设置窗口不在")
+            return
+        win.setProperty("section", 1)          # 播放分区
+        self.pump(400)
+
+        check("设置里有「启用音量均衡」开关",
+              win.findChild(QObject, "equalizeSwitch") is not None)
+        check("设置里有目标响度下拉",
+              win.findChild(QObject, "targetLufsBox") is not None)
+
+        stats = self.settings.loudnessStats
+        check("响度统计可读",
+              isinstance(stats, dict) and "measured" in stats and "pending" in stats,
+              f"{stats}")
+
+        # 拿一个本地静音 wav 当在播曲目（不联网），再塞一条测量值进去
+        wav = Path(tempfile.mkdtemp(prefix="fusion_eq_")) / "eq.wav"
+        write_silent_wav(wav, seconds=2)
+        track = Track(source="local", songmid=str(wav), name="均衡测试", path=str(wav))
+
+        old_current = self.player._current
+        self.player._current = track
+        self.eval_js("player.setVolume(80)")
+        self.pump(150)
+        before = self.player._output.volume()
+
+        self.loudness.store.put(Measurement(
+            uid=track.uid, loudness_lufs=-10.0, peak=1.0, seconds=180.0,
+            partial=False, source="local", method="decode", ok=True))
+        self.player._set_track_gain(track, ramp=False)
+        after = self.player._output.volume()
+
+        check("均衡增益改变了实际输出音量", after < before - 0.01,
+              f"{before:.3f} -> {after:.3f}")
+        check("音量滑块仍然是用户音量（80）", self.player.volume == 80,
+              f"player.volume={self.player.volume}")
+        check("增益说明能显示出来", "dB" in self.player.gainLabel,
+              f"{self.player.gainLabel!r}")
+
+        # 收尾：把状态还原，别影响后面的步骤
+        self.loudness.store.remove(track.uid)
+        self.player._current = old_current
+        self.player._set_track_gain(old_current, ramp=False)
+
+        self.settings.clearLoudness()
+        self.pump(300)
+        check("清空分析数据后统计归零", self.settings.loudnessStats["measured"] == 0,
+              f"{self.settings.loudnessStats}")
+
+    # ── 自动更新 ────────────────────────────────────────────
+    def step_updater(self):
+        """自动更新：不联网也要能显示状态；源码运行必须走「打开发布页」这条路。
+
+        这里**不触发真的检查**（CI 与本地都不该依赖 GitHub 可达），只验证状态机
+        与界面绑定；网络那一半由 ``tests/test_core.py`` 的纯函数用例覆盖。
+        """
+        check("更新控制器版本号与程序一致",
+              self.updater.currentVersion == self.app.version,
+              f"{self.updater.currentVersion} vs {self.app.version}")
+        check("发行形态判定得出结果",
+              self.updater.installKind in ("source", "onedir", "onefile"),
+              self.updater.installKind)
+        check("源码运行时不允许自动安装", self.updater.canInstall is False)
+        check("并且给出了原因", bool(self.updater.installHint), self.updater.installHint)
+        check("初始状态是 idle", self.updater.state == "idle", self.updater.state)
+        check("发布页地址指向本仓库",
+              "github.com/Janson20/FusionMusicPlayer" in self.updater.releaseUrl,
+              self.updater.releaseUrl)
+
+        win = self.find(SETTINGS_TITLE)
+        if win is None:
+            check("更新分区可检查", False, "设置窗口不在")
+            return
+        win.setProperty("section", 7)          # 关于分区
+        self.pump(400)
+        check("设置里有「检查更新」按钮",
+              win.findChild(QObject, "checkUpdateButton") is not None)
+        check("设置里有「自动检查更新」开关",
+              win.findChild(QObject, "autoCheckUpdateSwitch") is not None)
+
+        # 自动检查开关可写回配置（不联网）
+        self.updater.setAutoCheck(False)
+        check("关掉自动检查写进了配置", self.config.get("update.auto_check") is False)
+        self.updater.setAutoCheck(True)
+        check("再打开也写回去了", self.config.get("update.auto_check") is True)
+        check("状态文案不抛异常", isinstance(self.updater.statusText, str),
+              repr(self.updater.statusText))
 
     # ── 托盘与「关闭主窗口时」────────────────────────────────
     def step_tray(self):

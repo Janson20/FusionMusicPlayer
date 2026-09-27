@@ -48,15 +48,26 @@ LYRIC_ALIGN_OPTIONS = [
 # 歌词对齐的合法取值，非法值一律回落到居中
 LYRIC_ALIGNMENTS = ("left", "center", "right")
 
+#: 音量均衡的目标响度档位。数值越小整体越响（越接近「响度战争」的口径）
+TARGET_LUFS_OPTIONS = [
+    {"id": -18.0, "name": "-18 LUFS（ReplayGain 2.0）"},
+    {"id": -16.0, "name": "-16 LUFS（留更多动态）"},
+    {"id": -14.0, "name": "-14 LUFS（流媒体标准）"},
+    {"id": -12.0, "name": "-12 LUFS（偏响）"},
+    {"id": -10.0, "name": "-10 LUFS（很响）"},
+]
+
 class SettingsController(QObject):
     changed = Signal()
     cacheChanged = Signal()
+    loudnessChanged = Signal()
     message = Signal(str)
     errorOccurred = Signal(str)
 
-    def __init__(self, config, parent=None):
+    def __init__(self, config, loudness=None, parent=None):
         super().__init__(parent)
         self._config = config
+        self._loudness = loudness
 
     # ── 只读信息 ────────────────────────────────────────────
 
@@ -295,6 +306,71 @@ class SettingsController(QObject):
         cache.trim_cache(self.mediaCacheLimit)
         self.refreshCache()
         self.message.emit("已按配额清理缓存")
+
+    # ── 音量均衡 ────────────────────────────────────────────
+
+    @Property(bool, notify=changed)
+    def equalize(self) -> bool:
+        return bool(self._config.get("audio.equalize", True))
+
+    @Property(float, notify=changed)
+    def targetLufs(self) -> float:  # noqa: N802
+        try:
+            return float(self._config.get("audio.target_lufs", -14.0))
+        except (TypeError, ValueError):
+            return -14.0
+
+    @Property(bool, notify=changed)
+    def allowBoost(self) -> bool:  # noqa: N802
+        return bool(self._config.get("audio.allow_boost", True))
+
+    @Property(bool, notify=changed)
+    def prefetchLoudness(self) -> bool:  # noqa: N802
+        return bool(self._config.get("audio.prefetch_next", True))
+
+    @Property("QVariantList", constant=True)
+    def targetLufsOptions(self):  # noqa: N802
+        return [dict(item) for item in TARGET_LUFS_OPTIONS]
+
+    @Property("QVariant", notify=loudnessChanged)
+    def loudnessStats(self):  # noqa: N802
+        """响度分析的进度与缓存占用（设置页显示用）。"""
+        fallback = {"measured": 0, "failed": 0, "pending": 0, "total": 0, "size": "0 B",
+                    "avgLoudness": "", "enabled": self.equalize}
+        if self._loudness is None:
+            return fallback
+        try:
+            raw = self._loudness.stats()
+        except Exception:
+            return fallback
+        avg = raw.get("avgLoudness")
+        return {
+            "measured": int(raw.get("measured", 0) or 0),
+            "failed": int(raw.get("failed", 0) or 0),
+            "pending": int(raw.get("pending", 0) or 0),
+            "total": int(raw.get("total", 0) or 0),
+            "size": _human(int(raw.get("bytes", 0) or 0)),
+            "avgLoudness": f"{avg:.1f} LUFS" if isinstance(avg, (int, float)) else "",
+            "enabled": bool(raw.get("enabled", self.equalize)),
+        }
+
+    @Slot()
+    def notifyLoudnessChanged(self) -> None:  # noqa: N802
+        """响度缓存变了（分析出一个结果 / 清空），通知界面刷新统计。"""
+        self.loudnessChanged.emit()
+
+    @Slot()
+    def clearLoudness(self) -> None:  # noqa: N802
+        """清空响度缓存（下次播放会重新分析）。"""
+        if self._loudness is None:
+            return
+        try:
+            self._loudness.clear()
+            self.message.emit("已清空音量均衡的分析结果，下次播放会重新分析")
+        except Exception as e:
+            logger.warning("清空响度缓存失败: %s", e)
+            self.errorOccurred.emit("清空音量均衡数据失败")
+        self.loudnessChanged.emit()
 
     # ── 系统操作 ────────────────────────────────────────────
 

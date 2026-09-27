@@ -22,9 +22,11 @@ from .bridges.library import LibraryController
 from .bridges.roam import RoamController
 from .bridges.search import SearchController
 from .bridges.settings import SettingsController
+from .bridges.update import UpdateController
 from .bridges.wiki import SongWikiController
 from .config import Config
 from .core.account import AccountManager
+from .core.loudness_service import LoudnessService
 from .core.player import PlayerEngine
 from .core.store import Library
 
@@ -96,7 +98,9 @@ class Application(QObject):
         self.library = Library()
         self.library.load()
 
-        self.player = PlayerEngine(self.config, self.library)
+        # 音量均衡：后台响度分析（分析线程在第一次真正需要时才起）
+        self.loudness = LoudnessService(self.config)
+        self.player = PlayerEngine(self.config, self.library, self.loudness)
         # 恢复上次的播放队列与在播曲目。**必须在 QML 加载之前**：界面是在建立
         # 绑定的时候读一次属性值的，先把队列摆好，起来就是对的（见 restoreSession）。
         try:
@@ -113,8 +117,10 @@ class Application(QObject):
         self.roam.watch_player()
         self.wiki = SongWikiController(self.player, self)
         self.wiki.watch_player()
-        self.settings = SettingsController(self.config)
+        self.settings = SettingsController(self.config, self.loudness)
         self.app = AppController(self.config)
+        # 自动更新：只负责检查与提示，真正的替换动作要用户点（见 bridges/update.py）
+        self.updater = UpdateController(self.config)
 
         self._wire()
 
@@ -135,6 +141,10 @@ class Application(QObject):
         ctx.setContextProperty("wiki", self.wiki)
         ctx.setContextProperty("settings", self.settings)
         ctx.setContextProperty("app", self.app)
+        # 名字是 updater，**不要**改成 update：QML 里 `update` 会被窗口类型上
+        # 的同名方法遮住（实测 SettingsWindow.qml 里 `update.xxx` 全是 undefined，
+        # 而同一个 context 属性在别处读得到），改回去就会踩这个坑。
+        ctx.setContextProperty("updater", self.updater)
 
         self.engine.warnings.connect(self._on_qml_warning)
 
@@ -161,6 +171,11 @@ class Application(QObject):
         self.roam.message.connect(self.app.info)
         self.settings.message.connect(self.app.info)
         self.settings.errorOccurred.connect(self.app.error)
+        # 音量均衡：分析线程只统计、不打扰（失败也只在日志里）
+        self.loudness.changed.connect(self.settings.notifyLoudnessChanged)
+        # 自动更新：检查结果、下载进度、失败原因都要让用户看见
+        self.updater.message.connect(self.app.info)
+        self.updater.errorOccurred.connect(self.app.error)
 
     @Slot(str, str)
     def _on_notify(self, level: str, message: str) -> None:
@@ -216,6 +231,8 @@ class Application(QObject):
 
         self._apply_source_prefs()
         self.account.restore()
+        # 界面起来之后再挂自动更新：启动时的取数据优先
+        self.updater.start()
 
         if bool(self.config.get("local.scan_on_start", False)) and self.config.get(
             "local.folders", []
@@ -229,6 +246,10 @@ class Application(QObject):
 
     def shutdown(self) -> None:
         logger.info("正在退出，保存数据…")
+        try:
+            self.loudness.shutdown()
+        except Exception as e:
+            logger.debug("关闭响度分析服务失败: %s", e)
         try:
             self.player.shutdown()
         except Exception as e:
