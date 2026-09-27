@@ -27,6 +27,11 @@ FluWindow {
     showMaximize: false
     fixSize: true
 
+    // 背景与主窗口一致（见 components/AppBackground.qml）
+    background: Component {
+        AppBackground { }
+    }
+
     // 抵消 FluWindow 基类 Component.onCompleted 里的无条件 show()
     Component.onCompleted: hide()
 

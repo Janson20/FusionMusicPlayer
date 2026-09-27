@@ -22,7 +22,21 @@ DEFAULTS: Dict[str, Any] = {
     "appearance": {
         "theme": "auto",            # auto | light | dark
         "accent": "#6C4DF6",        # 品牌主色（强调色）
-        "background": "mica",       # mica | solid | gradient
+        # 窗口背景：solid（主题底色）| image（自定义背景图）。
+        # 早先这里写的是 "mica | solid | gradient"，但三个值一个都没实现过，
+        # 而且 "gradient" 违反本项目的 UI 规范（不用渐变）—— 现在只留真正生效的两种。
+        "background": "solid",
+        "background_image": "",     # data/backgrounds/ 下的文件名（不存绝对路径）
+        "background_opacity": 65,   # 0-100：背景图自身的不透明度
+        "background_blur": 25,      # 0-100：磨砂感（模糊）
+        "background_scrim": 35,     # 0-100：蒙版浓度（压暗/提亮，保证文字可读）
+        # 分区不透明度（0-100）。内容区（主体）不设面板色，图直接透出来最清；
+        # 侧边栏 / 播放栏 / 覆盖层 / 卡片各自压一层，越「贴边」越实 ——
+        # 一眼能看出层次，又不至于把图全挡掉。
+        "surface_sidebar": 68,      # 左侧导航栏
+        "surface_bottom": 74,       # 底部播放栏
+        "surface_overlay": 62,      # 覆盖层页面：歌词页（展开播放）、歌单/专辑/歌手详情
+        "surface_card": 80,         # 内容区里的卡片与列表底
         "animations": True,
         "nav_expanded": True,
     },

@@ -133,6 +133,15 @@ def media_cache_dir() -> Path:
     return cache_dir() / "media"
 
 
+def backgrounds_dir() -> Path:
+    """自定义背景图的落盘目录（设置 → 外观 → 背景图）。
+
+    放在 ``data/`` 里而不是用户选图时的原始位置：便携（拷走 data 就带走全部数据），
+    原图被挪走或删掉也不影响程序。见 :mod:`app.core.backgrounds`。
+    """
+    return data_dir() / "backgrounds"
+
+
 def config_file() -> Path:
     return data_dir() / "config.json"
 
@@ -200,6 +209,7 @@ def ensure_dirs() -> None:
         lyric_cache_dir(),
         media_cache_dir(),
         log_dir(),
+        backgrounds_dir(),
         key_file().parent,
     ):
         d.mkdir(parents=True, exist_ok=True)

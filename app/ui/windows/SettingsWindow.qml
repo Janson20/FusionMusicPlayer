@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs
 import QtQuick.Layouts
 import FluentUI
 import ".."
@@ -29,6 +30,11 @@ FluWindow {
     showStayTop: false
     showDark: false
     showMaximize: true
+
+    // 背景与主窗口一致（自定义背景图也在这里生效 —— 拖滑块就能当场看到效果）
+    background: Component {
+        AppBackground { }
+    }
 
     // FluWindow 的基类 Component.onCompleted 会无条件 show()，
     // 不收回的话设置窗口会跟着主窗口一起弹出来。
@@ -217,6 +223,251 @@ FluWindow {
                                 }
                             }
                         }
+                    }
+
+                    SectionHeader {
+                        Layout.fillWidth: true
+                        title: "背景图"
+                        subtitle: settings.backgroundActive
+                            ? "各区域按下面的「分区不透明度」压层，背景图从底下透出来"
+                            : "选一张图当窗口背景；会复制进 data/backgrounds，原图挪走或删掉都不影响"
+                    }
+                    RowLayout {
+                        spacing: 10
+                        FluButton {
+                            objectName: "backgroundPickButton"
+                            text: settings.backgroundActive ? "更换图片…" : "选择图片…"
+                            onClicked: backgroundDialog.open()
+                        }
+                        FluButton {
+                            objectName: "backgroundClearButton"
+                            text: "恢复纯色背景"
+                            disabled: !settings.backgroundActive
+                            onClicked: settings.clearBackgroundImage()
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
+                    FluText {
+                        Layout.fillWidth: true
+                        visible: settings.backgroundImageInfo !== ""
+                        text: settings.backgroundImageInfo
+                        font.pixelSize: 11
+                        color: settings.backgroundActive ? Theme.textTertiary : Theme.warning
+                        wrapMode: Text.Wrap
+                    }
+                    GridLayout {
+                        Layout.fillWidth: true
+                        columns: 3
+                        columnSpacing: 12
+                        rowSpacing: 8
+                        // 没图时这几个旋钮没有可见效果，先灰掉，免得以为是坏的
+                        enabled: settings.backgroundActive
+                        opacity: settings.backgroundActive ? 1.0 : 0.5
+
+                        FluText {
+                            text: "透明度"
+                            font.pixelSize: 12
+                            color: Theme.textSecondary
+                            Layout.alignment: Qt.AlignVCenter
+                        }
+                        FluSlider {
+                            objectName: "backgroundOpacitySlider"
+                            Layout.preferredWidth: 240
+                            from: 0
+                            to: 100
+                            stepSize: 1
+                            value: settings.backgroundOpacity
+                            tooltipEnabled: true
+                            text: Math.round(value) + "%"
+                            onMoved: settings.setInt("appearance.background_opacity", Math.round(value))
+                        }
+                        FluText {
+                            Layout.preferredWidth: 42
+                            Layout.alignment: Qt.AlignVCenter
+                            text: settings.backgroundOpacity + "%"
+                            font.pixelSize: 12
+                            color: Theme.textTertiary
+                        }
+
+                        FluText {
+                            text: "质感（磨砂）"
+                            font.pixelSize: 12
+                            color: Theme.textSecondary
+                            Layout.alignment: Qt.AlignVCenter
+                        }
+                        FluSlider {
+                            objectName: "backgroundBlurSlider"
+                            Layout.preferredWidth: 240
+                            from: 0
+                            to: 100
+                            stepSize: 1
+                            value: settings.backgroundBlur
+                            tooltipEnabled: true
+                            text: Math.round(value) + "%"
+                            onMoved: settings.setInt("appearance.background_blur", Math.round(value))
+                        }
+                        FluText {
+                            Layout.preferredWidth: 42
+                            Layout.alignment: Qt.AlignVCenter
+                            text: settings.backgroundBlur + "%"
+                            font.pixelSize: 12
+                            color: Theme.textTertiary
+                        }
+
+                        FluText {
+                            text: "蒙版"
+                            font.pixelSize: 12
+                            color: Theme.textSecondary
+                            Layout.alignment: Qt.AlignVCenter
+                        }
+                        FluSlider {
+                            objectName: "backgroundScrimSlider"
+                            Layout.preferredWidth: 240
+                            from: 0
+                            to: 100
+                            stepSize: 1
+                            value: settings.backgroundScrim
+                            tooltipEnabled: true
+                            text: Math.round(value) + "%"
+                            onMoved: settings.setInt("appearance.background_scrim", Math.round(value))
+                        }
+                        FluText {
+                            Layout.preferredWidth: 42
+                            Layout.alignment: Qt.AlignVCenter
+                            text: settings.backgroundScrim + "%"
+                            font.pixelSize: 12
+                            color: Theme.textTertiary
+                        }
+                    }
+
+                    SectionHeader {
+                        Layout.fillWidth: true
+                        title: "分区不透明度"
+                        subtitle: "数字越小越透；内容区（主体）不铺面板色，所以图在主体上最清"
+                    }
+                    GridLayout {
+                        Layout.fillWidth: true
+                        columns: 3
+                        columnSpacing: 12
+                        rowSpacing: 8
+                        enabled: settings.backgroundActive
+                        opacity: settings.backgroundActive ? 1.0 : 0.5
+
+                        FluText {
+                            text: "侧边栏"
+                            font.pixelSize: 12
+                            color: Theme.textSecondary
+                            Layout.alignment: Qt.AlignVCenter
+                        }
+                        FluSlider {
+                            objectName: "surfaceSidebarSlider"
+                            Layout.preferredWidth: 240
+                            from: 0
+                            to: 100
+                            stepSize: 1
+                            value: settings.surfaceSidebar
+                            tooltipEnabled: true
+                            text: Math.round(value) + "%"
+                            onMoved: settings.setInt("appearance.surface_sidebar", Math.round(value))
+                        }
+                        FluText {
+                            Layout.preferredWidth: 42
+                            Layout.alignment: Qt.AlignVCenter
+                            text: settings.surfaceSidebar + "%"
+                            font.pixelSize: 12
+                            color: Theme.textTertiary
+                        }
+
+                        FluText {
+                            text: "底部播放栏"
+                            font.pixelSize: 12
+                            color: Theme.textSecondary
+                            Layout.alignment: Qt.AlignVCenter
+                        }
+                        FluSlider {
+                            objectName: "surfaceBottomSlider"
+                            Layout.preferredWidth: 240
+                            from: 0
+                            to: 100
+                            stepSize: 1
+                            value: settings.surfaceBottom
+                            tooltipEnabled: true
+                            text: Math.round(value) + "%"
+                            onMoved: settings.setInt("appearance.surface_bottom", Math.round(value))
+                        }
+                        FluText {
+                            Layout.preferredWidth: 42
+                            Layout.alignment: Qt.AlignVCenter
+                            text: settings.surfaceBottom + "%"
+                            font.pixelSize: 12
+                            color: Theme.textTertiary
+                        }
+
+                        FluText {
+                            text: "歌词页 / 详情页"
+                            font.pixelSize: 12
+                            color: Theme.textSecondary
+                            Layout.alignment: Qt.AlignVCenter
+                        }
+                        FluSlider {
+                            objectName: "surfaceOverlaySlider"
+                            Layout.preferredWidth: 240
+                            from: 0
+                            to: 100
+                            stepSize: 1
+                            value: settings.surfaceOverlay
+                            tooltipEnabled: true
+                            text: Math.round(value) + "%"
+                            onMoved: settings.setInt("appearance.surface_overlay", Math.round(value))
+                        }
+                        FluText {
+                            Layout.preferredWidth: 42
+                            Layout.alignment: Qt.AlignVCenter
+                            text: settings.surfaceOverlay + "%"
+                            font.pixelSize: 12
+                            color: Theme.textTertiary
+                        }
+
+                        FluText {
+                            text: "卡片 / 列表"
+                            font.pixelSize: 12
+                            color: Theme.textSecondary
+                            Layout.alignment: Qt.AlignVCenter
+                        }
+                        FluSlider {
+                            objectName: "surfaceCardSlider"
+                            Layout.preferredWidth: 240
+                            from: 0
+                            to: 100
+                            stepSize: 1
+                            value: settings.surfaceCard
+                            tooltipEnabled: true
+                            text: Math.round(value) + "%"
+                            onMoved: settings.setInt("appearance.surface_card", Math.round(value))
+                        }
+                        FluText {
+                            Layout.preferredWidth: 42
+                            Layout.alignment: Qt.AlignVCenter
+                            text: settings.surfaceCard + "%"
+                            font.pixelSize: 12
+                            color: Theme.textTertiary
+                        }
+                    }
+                    FluText {
+                        Layout.fillWidth: true
+                        text: "蒙版按主题取色（深色压黑、浅色提白）保证文字读得清；"
+                            + "歌词页、歌单 / 专辑 / 歌手详情走同一个「覆盖层」参数，"
+                            + "它们铺满内容区，底不透明就完全看不到图。"
+                        font.pixelSize: 11
+                        color: Theme.textTertiary
+                        wrapMode: Text.Wrap
+                    }
+                    FluText {
+                        Layout.fillWidth: true
+                        text: "磨砂（质感）是整窗一次模糊：分区只影响各自压的那层颜色深浅。"
+                        font.pixelSize: 11
+                        color: Theme.textTertiary
+                        wrapMode: Text.Wrap
                     }
 
                     SectionHeader { Layout.fillWidth: true; title: "界面" }
@@ -1169,6 +1420,18 @@ FluWindow {
     function showLogin() {
         window.visible = false
         app.openLogin()
+    }
+
+    // 选背景图。用 FileDialog（和本地音乐页选文件夹同一套做法）：让用户手打
+    // 图片路径既容易打错也没法预览。入库、格式校验、旧图清理都在 Python 侧
+    // （settings.applyBackgroundImage），失败会弹提示且不动原有背景。
+    FileDialog {
+        id: backgroundDialog
+        objectName: "backgroundImageDialog"
+        title: "选择背景图片"
+        nameFilters: ["图片 (*.jpg *.jpeg *.png *.webp *.bmp *.gif *.tif *.tiff *.svg)",
+                      "所有文件 (*)"]
+        onAccepted: settings.applyBackgroundImage(selectedFile.toString())
     }
 
     FluContentDialog {

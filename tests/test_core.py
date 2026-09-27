@@ -2034,6 +2034,181 @@ def test_best_quality_prefers_hi_res():
     assert Track(source="wy", songmid="1", name="x", singer="y").best_quality == "128k"
 
 
+# ──────────────────────────────────────────────────────────────
+# 自定义背景图（设置 → 外观）
+# ──────────────────────────────────────────────────────────────
+
+
+def _write_png(path: Path, width: int = 64, height: int = 48,
+               color: tuple = (200, 60, 60)) -> Path:
+    """手写一张最小 PNG（纯标准库，测试不想为一张图多要一个依赖）。"""
+    import struct
+    import zlib
+
+    raw = b"".join(b"\x00" + bytes(color) * width for _ in range(height))
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(raw, 6))
+        + chunk(b"IEND", b"")
+    )
+    return path
+
+
+def _with_background_home():
+    """把数据目录指到临时目录（背景图落在 data/backgrounds 下）。"""
+    import os
+
+    saved = os.environ.get("FUSION_MUSIC_HOME")
+    home = Path(tempfile.mkdtemp(prefix="fusion_bg_"))
+    os.environ["FUSION_MUSIC_HOME"] = str(home)
+    return home, saved
+
+
+def _restore_home(saved):
+    import os
+
+    if saved is None:
+        os.environ.pop("FUSION_MUSIC_HOME", None)
+    else:
+        os.environ["FUSION_MUSIC_HOME"] = saved
+
+
+def test_background_store_and_resolve():
+    """入库：复制进 data/backgrounds、认出尺寸、名字按内容取（同图不堆副本）。"""
+    from app import paths
+    from app.core import backgrounds
+
+    home, saved = _with_background_home()
+    try:
+        paths.ensure_dirs()
+        src = _write_png(Path(tempfile.mkdtemp(prefix="fusion_bgsrc_")) / "壁纸.png")
+        image = backgrounds.store(src)
+
+        # 注意：data_dir() 会把路径 resolve 一遍，不能拿 mkdtemp 的短路径去比
+        assert image.path.parent == paths.backgrounds_dir()
+        assert image.path.is_file() and image.size == src.stat().st_size
+        assert (image.width, image.height) == (64, 48), (image.width, image.height)
+        assert image.url.startswith("file://")
+        assert "64×48" in image.info_text
+
+        again = backgrounds.store(src)
+        assert again.name == image.name, "同一张图不该产生第二份副本"
+        assert len(list(paths.backgrounds_dir().iterdir())) == 1
+
+        resolved = backgrounds.resolve(image.name)
+        assert resolved is not None and resolved.name == image.name
+        assert backgrounds.resolve("不存在的图.png") is None
+        assert backgrounds.resolve("") is None
+        assert home is not None
+    finally:
+        _restore_home(saved)
+
+
+def test_background_store_rejects_bad_input():
+    """入库前的几道闸：体积、内容、路径。文案要能直接给用户看。"""
+    from app import paths
+    from app.core import backgrounds
+
+    home, saved = _with_background_home()
+    try:
+        paths.ensure_dirs()
+        tmp = Path(tempfile.mkdtemp(prefix="fusion_bgbad_"))
+
+        fake = tmp / "其实是文本.png"
+        fake.write_text("这不是图片", encoding="utf-8")
+        try:
+            backgrounds.store(fake)
+            raise AssertionError("伪装成 png 的文本应当被拒")
+        except backgrounds.BackgroundError as e:
+            assert "图片" in str(e)
+
+        empty = tmp / "空.png"
+        empty.write_bytes(b"")
+        try:
+            backgrounds.store(empty)
+            raise AssertionError("空文件应当被拒")
+        except backgrounds.BackgroundError:
+            pass
+
+        try:
+            backgrounds.store(tmp / "根本没有这个文件.png")
+            raise AssertionError("不存在的文件应当被拒")
+        except backgrounds.BackgroundError:
+            pass
+
+        # 体积闸：临时把上限压小，免得真去写 20 MB
+        big = _write_png(tmp / "大图.png", 512, 512)
+        original = backgrounds.MAX_BYTES
+        backgrounds.MAX_BYTES = 64
+        try:
+            backgrounds.store(big)
+            raise AssertionError("超过体积上限应当被拒")
+        except backgrounds.BackgroundError as e:
+            assert "太大" in str(e)
+        finally:
+            backgrounds.MAX_BYTES = original
+
+        # 配置里的文件名只允许是"本目录下的普通文件名"
+        for name in ("../config.json", "a/b.png", "a\\b.png", ".hidden", ""):
+            assert backgrounds.resolve(name) is None, name
+        assert list(paths.backgrounds_dir().iterdir()) == []
+        assert home is not None
+    finally:
+        _restore_home(saved)
+
+
+def test_background_remove_and_prune():
+    """换图/清除之后目录里只该留当前那一张，不能每换一次就堆一份。"""
+    from app import paths
+    from app.core import backgrounds
+
+    home, saved = _with_background_home()
+    try:
+        paths.ensure_dirs()
+        tmp = Path(tempfile.mkdtemp(prefix="fusion_bgprune_"))
+        first = backgrounds.store(_write_png(tmp / "a.png", color=(200, 60, 60)))
+        second = backgrounds.store(_write_png(tmp / "b.png", color=(60, 120, 200)))
+        assert len(list(paths.backgrounds_dir().iterdir())) == 2
+
+        backgrounds.remove(first.name)
+        assert backgrounds.resolve(first.name) is None
+        backgrounds.prune(keep=second.name)
+        assert [p.name for p in paths.backgrounds_dir().iterdir()] == [second.name]
+
+        # 清除背景 = 删文件 + 清目录，重复调用不该报错
+        backgrounds.remove(second.name)
+        backgrounds.remove(second.name)
+        backgrounds.prune()
+        assert list(paths.backgrounds_dir().iterdir()) == []
+        assert home is not None
+    finally:
+        _restore_home(saved)
+
+
+def test_background_config_defaults_are_sane():
+    """配置默认值：默认不吃背景图，几个百分比都在 0-100 且互不冲突。"""
+    from app.config import DEFAULTS
+
+    appearance = DEFAULTS["appearance"]
+    assert appearance["background"] in ("solid", "image")
+    assert appearance["background_image"] == ""
+    for key in ("background_opacity", "background_blur", "background_scrim",
+                "surface_sidebar", "surface_bottom", "surface_overlay", "surface_card"):
+        value = appearance[key]
+        assert isinstance(value, int) and 0 <= value <= 100, (key, value)
+    # 分区默认值要拉开层次：贴边的（侧边栏 / 播放栏）比覆盖层实，卡片最实
+    assert appearance["surface_card"] > appearance["surface_bottom"] > 0
+    assert appearance["surface_overlay"] < appearance["surface_card"]
+    # 未启用图片时，面板必须是实色（否则老用户升级后界面会莫名其妙变透）
+    assert appearance["background"] != "image"
+
+
 if __name__ == "__main__":
     import traceback
 

@@ -24,9 +24,15 @@ Item {
         onWheel: function (wheel) { wheel.accepted = true }
     }
 
+    // 覆盖层页面自带一份背景层（理由见 NowPlayingPanel.qml）：
+    // 只铺半透明色的话，底下的页面内容会直接透上来，像两层叠在一起。
+    BackgroundLayer {
+        anchors.fill: parent
+    }
     Rectangle {
         anchors.fill: parent
         color: Theme.windowBg
+        opacity: Theme.alphaOverlay
     }
 
     ColumnLayout {

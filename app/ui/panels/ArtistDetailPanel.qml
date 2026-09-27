@@ -1,4 +1,4 @@
-﻿import QtQuick
+import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import FluentUI
@@ -51,9 +51,14 @@ Item {
         onWheel: function (wheel) { wheel.accepted = true }
     }
 
+    // 覆盖层页面自带一份背景层（理由见 NowPlayingPanel.qml）
+    BackgroundLayer {
+        anchors.fill: parent
+    }
     Rectangle {
         anchors.fill: parent
         color: Theme.windowBg
+        opacity: Theme.alphaOverlay
     }
 
     ColumnLayout {

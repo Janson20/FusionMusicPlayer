@@ -79,23 +79,34 @@ Item {
         onWheel: function (wheel) { wheel.accepted = true }
     }
 
-    // ── 背景：品牌色柔和渐变 ────────────────────────────
+    // ── 背景：自带一份背景层 + 一层按分区参数压的主题色 ──
+    //
+    // **不能**只铺一块半透明的主题色：这一页盖在内容区（甚至导航栏与播放栏）上面，
+    // 半透明会让上一页的卡片、列表直接透上来，看着像两层内容叠在一起。
+    // 自绘一份背景层就把底下的东西挡住了，同时又看得到背景图。
+    BackgroundLayer {
+        anchors.fill: parent
+    }
     Rectangle {
+        objectName: "nowPlayingBackdrop"
         anchors.fill: parent
         color: Theme.windowBg
+        // 没有背景图时 alphaOverlay = 1 → 与改动前完全一致（实色底）
+        opacity: Theme.alphaOverlay
+    }
 
-        Rectangle {
-            anchors.fill: parent
-            gradient: Gradient {
-                orientation: Gradient.Vertical
-                GradientStop {
-                    position: 0.0
-                    color: Theme.dark
-                        ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.16)
-                        : Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.08)
-                }
-                GradientStop { position: 0.55; color: "transparent" }
+    // 顶部一层品牌色柔光（原来的观感保留）
+    Rectangle {
+        anchors.fill: parent
+        gradient: Gradient {
+            orientation: Gradient.Vertical
+            GradientStop {
+                position: 0.0
+                color: Theme.dark
+                    ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.16)
+                    : Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.08)
             }
+            GradientStop { position: 0.55; color: "transparent" }
         }
     }
 

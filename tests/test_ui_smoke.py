@@ -76,6 +76,36 @@ def _qt_message_handler(mode, context, message):
     QT_MESSAGES.append(str(message))
 
 
+def _is_empty_url(value) -> bool:
+    """QML 里 ``source`` 这类 URL 属性为空时是``QUrl('')``，字符串化并不等于空串。"""
+    if value is None:
+        return True
+    empty = getattr(value, "isEmpty", None)
+    if callable(empty):
+        return bool(empty())
+    return str(value) in ("", "undefined")
+
+
+def _write_test_png(path: Path, width: int = 64, height: int = 48) -> Path:
+    """写一张最小 PNG 当背景图素材（纯标准库，不额外依赖 Pillow）。"""
+    import struct
+    import zlib
+
+    raw = b"".join(b"\x00" + bytes((200, 60, 60)) * width for _ in range(height))
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(raw, 6))
+        + chunk(b"IEND", b"")
+    )
+    return path
+
+
 class UiProbe(Application):
     def run(self) -> int:
         from app import paths
@@ -161,6 +191,90 @@ class UiProbe(Application):
         value, _undefined = e.evaluate()
         return default if e.hasError() else value
 
+    # ── 背景图（设置 → 外观）──────────────────────────────────
+    def check_background_section(self):
+        """自定义背景图：入库 → 生效 → 旋钮真的作用到背景层 → 清除后回到纯色。
+
+        这里守的是「设置项接上了但没有真的生效」这类毛病：光看设置里存了值不够，
+        要能看见背景层拿到图、Effect 的 opacity 跟着滑块走、面板真的变半透明。
+        """
+        win = self.find(SETTINGS_TITLE)
+        if win is None:
+            check("背景图分区可检查", False, "设置窗口不在")
+            return
+        win.setProperty("section", 0)   # 外观
+        self.pump(500)
+
+        # 设置窗口是**另一个 QQuickWindow**，它的控件不在主窗口的项树里，
+        # 必须从它自己的 contentItem 往下找
+        root = win.property("contentItem")
+        check("背景图有「选择图片」按钮",
+              self.find_items("backgroundPickButton", root) != [])
+        check("背景图有「恢复纯色背景」按钮",
+              self.find_items("backgroundClearButton", root) != [])
+        for name in ("backgroundOpacitySlider", "backgroundBlurSlider",
+                     "backgroundScrimSlider", "surfaceSidebarSlider",
+                     "surfaceBottomSlider", "surfaceOverlaySlider", "surfaceCardSlider"):
+            check(f"背景图的 {name} 在位", self.find_items(name, root) != [])
+
+        src = Path(tempfile.mkdtemp(prefix="fusion_bgimg_")) / "wallpaper.png"
+        _write_test_png(src)
+        self.settings.applyBackgroundImage(src.as_uri())
+        self.pump(1200)
+
+        check("应用背景图后设置生效", bool(self.settings.backgroundActive))
+        image = self.item("appBackgroundImage")
+        check("背景层拿到了图片",
+              image is not None and not _is_empty_url(image.property("source")),
+              repr(image.property("source")) if image is not None else "背景层不存在")
+
+        bar = self.item("playerBar")
+        check("底部播放栏半透明（比主体实，但要看得到图）",
+              bar is not None and 0 < int(bar.property("color").alpha()) < 255,
+              f"alpha={bar.property('color').alpha() if bar is not None else None}")
+
+        # 歌词页（展开播放）也要能看到图，但**不能**透出底下的页面内容：
+        # 它自带一份背景层（BackgroundLayer）+ 按分区参数压的主题色
+        self.eval_js("app.setExpanded(true)")
+        self.pump(1400)
+        backdrop = self.item("nowPlayingBackdrop")
+        check("歌词页自带背景层（底 + 图）",
+              self.item("backgroundBase") is not None
+              and self.item("appBackgroundImage") is not None)
+        check("歌词页按分区参数压色（不是全实底）",
+              backdrop is not None and 0 < float(backdrop.property("opacity")) < 1.0,
+              f"opacity={backdrop.property('opacity') if backdrop is not None else None}")
+        self.settings.setInt("appearance.surface_overlay", 25)
+        self.pump(500)
+        backdrop = self.item("nowPlayingBackdrop")
+        check("歌词页的不透明度跟着分区滑块走",
+              backdrop is not None and abs(float(backdrop.property("opacity")) - 0.25) < 0.02,
+              f"opacity={backdrop.property('opacity') if backdrop is not None else None}")
+        self.settings.setInt("appearance.surface_overlay", 62)
+        self.eval_js("app.setExpanded(false)")
+        self.pump(700)
+
+        self.settings.setInt("appearance.background_opacity", 20)
+        self.pump(400)
+        effect = self.item("appBackgroundEffect")
+        check("透明度滑块的值存进了设置", int(self.settings.backgroundOpacity) == 20,
+              str(self.settings.backgroundOpacity))
+        check("透明度真的作用到背景层",
+              effect is not None and abs(float(effect.property("opacity")) - 0.2) < 0.02,
+              f"opacity={effect.property('opacity') if effect is not None else None}")
+
+        self.settings.clearBackgroundImage()
+        self.pump(700)
+        check("清除后设置回到纯色", not bool(self.settings.backgroundActive))
+        image = self.item("appBackgroundImage")
+        check("清除后背景层不再有图",
+              image is None or _is_empty_url(image.property("source")),
+              repr(image.property("source")) if image is not None else "背景层不存在")
+        bar = self.item("playerBar")
+        check("清除后面板恢复实色",
+              bar is not None and int(bar.property("color").alpha()) == 255,
+              f"alpha={bar.property('color').alpha() if bar is not None else None}")
+
     # ── 步骤 ────────────────────────────────────────────────
     def step_startup(self):
         check("启动时只显示主窗口", self.visible() == [MAIN_TITLE], f"{self.visible()}")
@@ -169,6 +283,7 @@ class UiProbe(Application):
         check("设置窗口可打开", SETTINGS_TITLE in self.visible(), f"{self.visible()}")
 
         self.check_account_section()
+        self.check_background_section()
 
         w = self.find(SETTINGS_TITLE)
         if w:

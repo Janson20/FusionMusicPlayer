@@ -41,6 +41,13 @@ FluWindow {
     autoMaximize: app.restoreMaximized()
     windowIcon: ""
 
+    // 窗口背景：主题底色 + 可选的自定义背景图（设置 → 外观 → 背景图）。
+    // FluWindow 的 background 是个 Component，会被它内部的 FluLoader 铺满整个窗口，
+    // 这正是替换背景的入口（见 components/AppBackground.qml）。
+    background: Component {
+        AppBackground { }
+    }
+
     // 缩到托盘时提示过一次就不再提示（每次关闭都弹气泡很烦）
     property bool trayHintShown: false
 

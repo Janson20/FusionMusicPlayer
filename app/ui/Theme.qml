@@ -25,14 +25,30 @@ QtObject {
 
     // ── 表面 ────────────────────────────────────────────
     readonly property bool dark: FluTheme.dark
+
+    /*! 分区不透明度（0.0-1.0）。默认 1 = 实色。
+     *
+     * 启用自定义背景图时由 AppBackground 按设置里的**分区**参数改写：
+     * 内容区（主体）没有面板色，图直接透出来最清；侧边栏 / 播放栏 / 覆盖层 /
+     * 卡片各自压一层，越"贴边"越实 —— 层次一眼能看出来，又不至于把图全挡掉。
+     */
+    property real alphaSidebar: 1.0
+    property real alphaBottom: 1.0
+    property real alphaOverlay: 1.0
+    property real alphaCard: 1.0
+
+    function _surface(color, alpha) {
+        return alpha >= 1.0 ? color : Qt.rgba(color.r, color.g, color.b, alpha)
+    }
+
     readonly property color windowBg: dark ? "#131218" : "#F4F4FA"
-    readonly property color navBg: dark ? "#191821" : "#EDEDF6"
-    readonly property color cardBg: dark ? "#1E1D27" : "#FFFFFF"
-    readonly property color cardHover: dark ? "#272633" : "#F4F3FB"
-    readonly property color barBg: dark ? "#1A1923" : "#FFFFFF"
+    readonly property color navBg: _surface(dark ? "#191821" : "#EDEDF6", alphaSidebar)
+    readonly property color cardBg: _surface(dark ? "#1E1D27" : "#FFFFFF", alphaCard)
+    readonly property color cardHover: _surface(dark ? "#272633" : "#F4F3FB", alphaCard)
+    readonly property color barBg: _surface(dark ? "#1A1923" : "#FFFFFF", alphaBottom)
     readonly property color border: dark ? "#2C2B38" : "#E5E4EF"
     readonly property color divider: dark ? "#262531" : "#EEEDF5"
-    readonly property color overlayBg: dark ? "#16151E" : "#FFFFFF"
+    readonly property color overlayBg: _surface(dark ? "#16151E" : "#FFFFFF", alphaCard)
     readonly property color scrim: Qt.rgba(0, 0, 0, dark ? 0.55 : 0.28)
 
     // ── 文本 ────────────────────────────────────────────

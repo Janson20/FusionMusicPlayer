@@ -12,7 +12,7 @@ from PySide6.QtCore import QObject, Property, Signal, Slot
 
 from .. import paths
 from ..config import DEFAULTS
-from ..core import cache
+from ..core import backgrounds, cache
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,10 @@ class SettingsController(QObject):
         super().__init__(parent)
         self._config = config
         self._loudness = loudness
+        # backgroundImage 会被 QML 反复求值（每个窗口的背景层都绑它），
+        # 而解析要做文件校验，所以按文件名缓存一次
+        self._background_cache_key: str | None = None
+        self._background_cache = None
 
     # ── 只读信息 ────────────────────────────────────────────
 
@@ -214,6 +218,179 @@ class SettingsController(QObject):
             {"id": m["id"], "name": m["name"], "enabled": m["id"] in enabled}
             for m in SOURCE_META
         ]
+
+    # ── 背景图 ──────────────────────────────────────────────
+    #
+    # 图片本体存在 data/backgrounds/ 里（见 core/backgrounds.py），配置里只有文件名。
+    # 这里负责：入库/替换/清除、把文件名解析成 QML 能用的 URL、以及给界面显示的状态文案。
+
+    @Property(bool, notify=changed)
+    def backgroundActive(self) -> bool:  # noqa: N802
+        """背景图是否真的生效（模式选的是图，**而且**文件确实能读到）。
+
+        文件被删掉时这里会变回 False：界面自动退回纯色底，而不是对着一张
+        不存在的图干等。
+        """
+        if str(self._config.get("appearance.background", "solid")) != "image":
+            return False
+        return self._background() is not None
+
+    @Property(str, notify=changed)
+    def backgroundImage(self) -> str:  # noqa: N802
+        """背景图的 file:// URL（不生效时是空串，QML 直接绑给 Image.source）。"""
+        image = self._background()
+        return image.url if image else ""
+
+    @Property(int, notify=changed)
+    def backgroundImageWidth(self) -> int:  # noqa: N802
+        """原图像素宽（0 = 没图）。
+
+        QML 侧拿它算 ``sourceSize``：按同一个比例缩到长边 2560 以内再解码，
+        既不会把 4K 原图整张塞进显存，也不会因为只给一边而改变宽高比。
+        """
+        image = self._background()
+        return image.width if image else 0
+
+    @Property(int, notify=changed)
+    def backgroundImageHeight(self) -> int:  # noqa: N802
+        image = self._background()
+        return image.height if image else 0
+
+    def _percent(self, key: str, default: int) -> int:
+        """0–100 的百分比设置：脏数据夹回范围，不抛异常。"""
+        try:
+            value = int(self._config.get(key, default))
+        except (TypeError, ValueError):
+            return default
+        return max(0, min(100, value))
+
+    @Property(int, notify=changed)
+    def backgroundOpacity(self) -> int:  # noqa: N802
+        """背景图自身的不透明度（0-100）：调小就让底下的主题色透出来。"""
+        return self._percent("appearance.background_opacity", 65)
+
+    @Property(int, notify=changed)
+    def backgroundBlur(self) -> int:  # noqa: N802
+        """磨砂感（0-100）：模糊半径，0 = 保持原图清晰。"""
+        return self._percent("appearance.background_blur", 25)
+
+    @Property(int, notify=changed)
+    def backgroundScrim(self) -> int:  # noqa: N802
+        """蒙版浓度（0-100）：暗色主题压黑、浅色主题提白，保证文字读得清。"""
+        return self._percent("appearance.background_scrim", 35)
+
+    @Property(int, notify=changed)
+    def surfaceSidebar(self) -> int:  # noqa: N802
+        """左侧导航栏的不透明度（0-100）。"""
+        return self._percent("appearance.surface_sidebar", 68)
+
+    @Property(int, notify=changed)
+    def surfaceBottom(self) -> int:  # noqa: N802
+        """底部播放栏的不透明度（0-100）。"""
+        return self._percent("appearance.surface_bottom", 74)
+
+    @Property(int, notify=changed)
+    def surfaceOverlay(self) -> int:  # noqa: N802
+        """覆盖层页面的不透明度（0-100）：歌词页（展开播放）、歌单 / 专辑 / 歌手详情。"""
+        return self._percent("appearance.surface_overlay", 62)
+
+    @Property(int, notify=changed)
+    def surfaceCard(self) -> int:  # noqa: N802
+        """内容区里卡片与列表底的不透明度（0-100）。"""
+        return self._percent("appearance.surface_card", 80)
+
+    @Property(str, notify=changed)
+    def backgroundImageInfo(self) -> str:  # noqa: N802
+        """设置页显示的一行状态：尺寸 · 体积 · 文件名（缺失时说明原因）。"""
+        name = str(self._config.get("appearance.background_image", "") or "")
+        if not name:
+            return ""
+        image = self._background()
+        if image is None:
+            return f"图片已丢失：{name}（已退回纯色背景，重新选一张即可）"
+        return image.info_text
+
+    def _background(self):
+        """当前配置指向的背景图（带缓存：这是 QML 每次求值都会读的属性）。
+
+        缓存的是"文件名 → 解析结果"。但文件可能被程序外面删掉或替换，所以**命中
+        缓存时也要核对一次**：``stat`` 很便宜，而重新解析要过一遍 Qt 的格式探测，
+        不能每帧都做。对不上就作废重来 —— 否则删掉文件后界面还会一直指着一张
+        不存在的图。
+        """
+        name = str(self._config.get("appearance.background_image", "") or "")
+        if name == self._background_cache_key:
+            cached = self._background_cache
+            if cached is None:
+                return None
+            try:
+                if cached.path.is_file() and cached.path.stat().st_size == cached.size:
+                    return cached
+            except OSError:
+                pass
+        self._background_cache_key = name
+        self._background_cache = backgrounds.resolve(name) if name else None
+        return self._background_cache
+
+    def _forget_background(self) -> None:
+        self._background_cache_key = None
+        self._background_cache = None
+
+    @Slot(str)
+    def applyBackgroundImage(self, url: str) -> None:  # noqa: N802
+        """把用户选中的图片入库并启用。
+
+        入参是 QML ``FileDialog`` 给的 URL（``file:///D:/...``）。入库失败只报错，
+        不动原有配置 —— 用户选错一个文件不该把现有背景弄没。
+        """
+        path = self._local_path(url)
+        if not path:
+            self.errorOccurred.emit("没有选择图片文件")
+            return
+        old = str(self._config.get("appearance.background_image", "") or "")
+        try:
+            image = backgrounds.store(path)
+        except backgrounds.BackgroundError as e:
+            self.errorOccurred.emit(f"背景图设置失败：{e}")
+            return
+        except Exception as e:  # pragma: no cover - 兜底，不让选图把窗口带崩
+            logger.exception("背景图入库异常")
+            self.errorOccurred.emit(f"背景图设置失败：{e}")
+            return
+
+        self._config.set("appearance.background_image", image.name)
+        self._config.set("appearance.background", "image")
+        self._forget_background()
+        if old and old != image.name:
+            backgrounds.remove(old)
+        backgrounds.prune(keep=image.name)
+        self.changed.emit()
+        self.message.emit(f"背景图已更新：{image.width}×{image.height}")
+
+    @Slot()
+    def clearBackgroundImage(self) -> None:  # noqa: N802
+        """恢复到主题纯色底，并删掉入库的图（不留副本）。"""
+        old = str(self._config.get("appearance.background_image", "") or "")
+        self._config.set("appearance.background_image", "")
+        self._config.set("appearance.background", "solid")
+        self._forget_background()
+        if old:
+            backgrounds.remove(old)
+        backgrounds.prune()
+        self.changed.emit()
+        self.message.emit("已恢复为纯色背景")
+
+    @staticmethod
+    def _local_path(url: str) -> str:
+        """把 QML 传过来的 URL/路径统一成本地路径。"""
+        text = str(url or "").strip()
+        if not text:
+            return ""
+        if text.startswith("file:"):
+            from PySide6.QtCore import QUrl
+
+            return QUrl(text).toLocalFile()
+        return text
 
     @Property("QVariant", notify=changed)
     def allSettings(self):  # noqa: N802
