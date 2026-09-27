@@ -22,6 +22,9 @@ from app.core.models import Track, format_duration  # noqa: E402
 from app.core.queue import PlayMode, PlayQueue, mode_from_name  # noqa: E402
 from app.security.vault import CredentialVault  # noqa: E402
 
+#: 跑 JS 库（ArtistNames.js）时用的 QCoreApplication，**必须留住引用**：
+#: 被 Python 回收掉之后 Qt 会对着已销毁的实例干活（实测直接崩）
+_QT_APP = None
 
 
 # ──────────────────────────────────────────────────────────────
@@ -1714,6 +1717,79 @@ def test_tray_icon_source_uses_bundled_assets():
                 setattr(_sys, name, value)
 
 
+# ──────────────────────────────────────────────────────────────
+# 歌手过多时的折叠
+# ──────────────────────────────────────────────────────────────
+
+
+def test_artist_names_fold_when_too_many():
+    """歌手多于阈值时只铺开前几位，其余折叠成「等 N 人」。
+
+    守的是「歌手太多导致显示问题」这个真机故障：歌手行是逐个名字排的
+    RowLayout，**不会换行**，十几个歌手（企划曲 / 周年纪念集很常见）会把这一行
+    撑到窗口两边、横着盖住封面与歌词。
+
+    ``ArtistNames.js`` 是 QML 里的库文件，这里用 Qt 自带的 JS 引擎（QJSEngine）
+    把它的规则原样跑一遍 —— 不引 node 之类的额外工具，测的也确实是 QML 用的那个引擎。
+    """
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtQml import QJSEngine
+
+    # QJSEngine 需要一个 QCoreApplication，而且**必须把引用留住**：
+    # 让它被 Python 回收掉的话，Qt 之后就在对着一个已销毁的实例干活
+    # （实测直接崩，退出码 0xC0000409）
+    global _QT_APP
+    if _QT_APP is None:
+        _QT_APP = QCoreApplication.instance() or QCoreApplication([])
+
+    source = (Path(__file__).resolve().parent.parent
+              / "app" / "ui" / "ArtistNames.js").read_text(encoding="utf-8")
+    assert ".pragma library" in source
+    # .pragma 只在 QML 的 import 里有效，直接 evaluate 要去掉
+    engine = QJSEngine()
+    engine.evaluate(source.replace(".pragma library", ""), "ArtistNames.js")
+
+    many = ("原幻乐社(十八渡)、非凤FreakMalus、莫临Moris、伪证的火云龙、洛天依Official、"
+            "言和、乐正绫、墨清弦、心华、星尘、海伊、赤羽、苍穹、诗岸、乐正龙牙、牧心、微羽摩柯")
+    probe = engine.evaluate("""
+        (function () {
+            var many = "%s";
+            function summarize(text, limit) {
+                var parts = limit === undefined ? linkParts(text) : linkParts(text, limit);
+                var names = [];
+                var last = parts.length ? parts[parts.length - 1]
+                                        : { text: "", more: false, total: 0 };
+                for (var i = 0; i < parts.length; i++)
+                    if (!parts[i].separator) names.push(parts[i].text);
+                return { count: names.length, names: names, last: last.text,
+                         more: last.more === true, total: last.total, parts: parts.length };
+            }
+            return { folded: summarize(many), unlimited: summarize(many, 0),
+                     few: summarize("A、B"), single: summarize("仅一位"),
+                     empty: summarize("") };
+        })()
+    """ % many)
+    assert not probe.isError(), probe.toString()
+    data = probe.toVariant()
+
+    folded = data["folded"]
+    # 前 3 位 + 一个「等 N 人」片段
+    assert folded["count"] == 4, folded
+    assert folded["names"][:3] == ["原幻乐社(十八渡)", "非凤FreakMalus", "莫临Moris"], folded
+    assert folded["last"] == "等 17 人", folded
+    assert folded["more"] is True and folded["total"] == 17
+    # limit=0 表示不折叠（完整列表 / 菜单用）
+    assert data["unlimited"]["count"] == 17 and data["unlimited"]["more"] is False
+    # 人少的时候不该出现「等 N 人」，也不该多出分隔符
+    assert data["few"]["count"] == 2 and data["few"]["more"] is False
+    assert data["few"]["parts"] == 3          # A + 分隔符 + B
+    assert data["single"]["count"] == 1 and data["single"]["parts"] == 1
+    assert data["empty"]["count"] == 0
+
+
+# ──────────────────────────────────────────────────────────────
+# 自动更新：暂存与替换脚本
+# ──────────────────────────────────────────────────────────────
 
 
 def test_update_script_never_touches_user_data():

@@ -746,6 +746,7 @@ class UiProbe(Application):
 
         self.guard(self.step_equalize)
         self.guard(self.step_updater)
+        self.guard(self.step_many_artists)
 
         self.guard(self.step_tray)
 
@@ -1254,6 +1255,118 @@ class UiProbe(Application):
                 value, _ = expr.evaluate()
                 return None if expr.hasError() else bool(value)
         return None
+
+    # ── 多歌手时的折叠（企划曲 / 周年纪念集）──────────────────
+    def step_many_artists(self):
+        """十几位歌手时，展开播放页那一行**不能溢出**。
+
+        守的是用户报上来的显示问题：歌手行是按「名字 + 分隔符」逐个排的
+        ``RowLayout``，它**不会换行** —— 名字多的时候整行会被撑到窗口两边，
+        横着盖住封面、歌词和专辑名（真机截图里那一行从最左铺到了最右）。
+        修法是只铺开前几位，其余折叠成「等 N 人」（点开是完整列表）。
+
+        这里读的是**真实渲染出来的几何**：把每个歌手名映射到窗口坐标，
+        看它们有没有跑出所属列的范围 —— 光断言「模型里有几项」是拦不住
+        布局溢出的。
+        """
+        import tempfile
+        from pathlib import Path
+
+        from app.core.models import Track
+
+        names = ["原幻乐社(十八渡)", "非凤FreakMalus", "莫临Moris", "伪证的火云龙",
+                 "洛天依Official", "言和", "乐正绫", "墨清弦", "心华", "星尘",
+                 "海伊", "赤羽", "苍穹", "诗岸", "乐正龙牙", "牧心", "微羽摩柯"]
+
+        wav = Path(tempfile.mkdtemp(prefix="fusion_artists_")) / "many.wav"
+        write_silent_wav(wav, seconds=2)
+        track = Track(source="local", songmid=str(wav), name="一载梦尘录",
+                      singer="、".join(names), album="幻乐社周年纪念作品集", path=str(wav))
+
+        self.eval_js("app.setExpanded(true)")
+        self.pump(600)
+        self.player._current = track
+        self.player.trackChanged.emit()
+        self.pump(700)
+
+        links = [i for i in self.find_items("nowPlayingArtistLink") if i.isVisible()]
+        more = [i for i in self.find_items("nowPlayingArtistMore") if i.isVisible()]
+        # 展开播放页那一栏只有 180~330px 宽，铺开 2 位正好：再多每位就只剩
+        # 五十来像素，名字会被省略号啃得看不出是谁
+        check("只铺开前 2 位歌手", len(links) == 2, f"links={len(links)}")
+        check("其余折叠成「等 N 人」", len(more) == 1 and
+              str(more[0].property("text")) == f"等 {len(names)} 人",
+              f"{[i.property('text') for i in more]}")
+
+        column = self.window.findChild(QObject, "nowPlayingCoverColumn")
+        check("找得到封面列", column is not None)
+        if column is not None and links and more:
+            left = self.to_point(column, 0, 0).x()
+            right = left + float(column.property("width"))
+            items = links + more
+            boxes = []
+            for item in items:
+                origin = self.to_point(item, 0, 0).x()
+                boxes.append((origin, origin + float(item.property("width"))))
+            spilled = [b for b in boxes if b[0] < left - 1 or b[1] > right + 1]
+            check("歌手一行没有溢出所属列",
+                  not spilled,
+                  f"列=[{left:.0f},{right:.0f}] 歌手项={[(round(a), round(b)) for a, b in boxes]}")
+
+        # 完整列表从「等 N 人」进去，一个都不能少（这里的 names 就是菜单的数据源）
+        menu = self.window.findChild(QObject, "nowPlayingArtistMenu")
+        raw_names = menu.property("names") if menu is not None else None
+        if hasattr(raw_names, "toVariant"):     # property var 拿回来的是 QJSValue
+            raw_names = raw_names.toVariant()
+        check("「等 N 人」背后挂着完整歌手列表",
+              menu is not None and len(raw_names or []) == len(names),
+              f"{None if menu is None else len(raw_names or [])} / {len(names)}")
+
+        # 列表行（TrackRow）用的是同一套规则，也要折叠 + 不溢出
+        self.eval_js("app.go('search')")
+        self.pump(600)
+        self.search._model.set_tracks([
+            Track(source="wy", songmid="many-artists", name="一载梦尘录",
+                  singer="、".join(names), album="幻乐社周年纪念作品集", interval=310),
+        ])
+        self.pump(700)
+
+        row = self.top_row()
+        check("列表行渲染出来了", row is not None)
+        if row is not None:
+            row_links = [i for i in self.find_items("trackRowArtistLink", row) if i.isVisible()]
+            row_more = [i for i in self.find_items("trackRowArtistMore", row) if i.isVisible()]
+            check("列表行也只铺开前 3 位歌手", len(row_links) == 3, f"{len(row_links)} 个")
+            check("列表行同样折叠出「等 N 人」",
+                  len(row_more) == 1 and str(row_more[0].property("text"))
+                  == f"等 {len(names)} 人",
+                  f"{[i.property('text') for i in row_more]}")
+
+            row_left = self.to_point(row, 0, 0).x()
+            row_right = row_left + float(row.property("width"))
+            boxes = []
+            for item in row_links + row_more:
+                origin = self.to_point(item, 0, 0).x()
+                boxes.append((origin, origin + float(item.property("width"))))
+            check("列表行的歌手没有跑出行外",
+                  all(b[0] >= row_left - 1 and b[1] <= row_right + 1 for b in boxes),
+                  f"行=[{row_left:.0f},{row_right:.0f}] 歌手项={[(round(a), round(b)) for a, b in boxes]}")
+
+            albums = [i for i in self.find_items("trackRowAlbumLink", row) if i.isVisible()]
+            if albums and boxes:
+                album_left = self.to_point(albums[0], 0, 0).x()
+                gap = album_left - max(b[1] for b in boxes)
+                # 专辑名必须紧跟在歌手后面：只给子项 fillWidth 的话，多出来的
+                # 宽度会被分给歌手名，专辑名被推到行尾（中间一段空白）
+                check("专辑名紧跟在歌手后面（没被挤到行尾）", -2 <= gap <= 24,
+                      f"间距={gap:.1f}px")
+
+        # 收尾：还原当前曲目与页面，别影响后面的步骤
+        self.player._current = None
+        self.player.trackChanged.emit()
+        self.eval_js("app.setExpanded(false)")
+        self.eval_js("app.go('discover')")
+        self.pump(400)
 
     # ── 信号处理器参数 ──────────────────────────────────────
     def step_signal_params(self):

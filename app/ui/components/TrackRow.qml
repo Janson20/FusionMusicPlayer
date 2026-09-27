@@ -172,73 +172,93 @@ Rectangle {
             }
 
             // 歌手名逐个可点（进歌手页），专辑名跟在后面
-            RowLayout {
+            // 歌手多于 3 位时只铺开前 3 位 + 「等 N 人」：整行是不会换行的
+            // RowLayout，十几个歌手会把时长 / 按钮挤出可视区（完整列表在本行的
+            // 右键菜单「查看歌手」里，所以这里的「等 N 人」不做交互）。
+            //
+            // 外面这层 Item 把子行的宽度**夹在本行之内**：光给子项 Layout.fillWidth
+            // 是不够的 —— 那样布局会把多出来的宽度分给歌手名，专辑名就被推到
+            // 行尾去了（看着像两个不相干的字段）。宽度取 min(自身所需, 可用)，
+            // 放得下就自然排、放不下才逐项省略。
+            Item {
                 Layout.fillWidth: true
-                spacing: 0
+                Layout.preferredHeight: artistRow.implicitHeight
 
-                Repeater {
-                    model: ArtistNames.linkParts(control.singer)
-                    delegate: FluText {
-                        required property var modelData
+                RowLayout {
+                    id: artistRow
+                    anchors.left: parent.left
+                    width: Math.min(implicitWidth, parent.width)
+                    spacing: 0
 
-                        // 分隔符是**独立**的一项：不跟着悬停变强调色、也没有下划线，
-                        // 更不吃点击（塞进歌手名里的话「 / 」会一起被划上）
-                        objectName: modelData.separator ? "trackRowArtistSep" : "trackRowArtistLink"
+                    Repeater {
+                        model: ArtistNames.linkParts(control.singer)
+                        delegate: FluText {
+                            required property var modelData
+
+                            // 分隔符是**独立**的一项：不跟着悬停变强调色、也没有下划线，
+                            // 更不吃点击（塞进歌手名里的话「 / 」会一起被划上）
+                            objectName: modelData.more
+                                ? "trackRowArtistMore"
+                                : (modelData.separator ? "trackRowArtistSep" : "trackRowArtistLink")
+                            Layout.alignment: Qt.AlignVCenter
+                            Layout.fillWidth: !modelData.separator
+                            Layout.minimumWidth: modelData.separator ? 0 : 28
+                            Layout.maximumWidth: modelData.separator ? Number.POSITIVE_INFINITY
+                                                                     : (modelData.more ? 64 : 190)
+                            text: modelData.text
+                            font.pixelSize: 11
+                            font.underline: !modelData.separator && !modelData.more
+                                            && artistMouse.containsMouse
+                            color: (!modelData.separator && !modelData.more
+                                    && artistMouse.containsMouse)
+                                   ? Theme.accent : Theme.textTertiary
+                            elide: Text.ElideRight
+
+                            MouseArea {
+                                id: artistMouse
+                                anchors.fill: parent
+                                enabled: !modelData.separator && !modelData.more
+                                hoverEnabled: !modelData.more
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: control.artistRequested(modelData.name)
+                            }
+                        }
+                    }
+
+                    // 歌手与专辑之间的「 · 」：同样要独立成项，不能拼进专辑名里
+                    // （拼进去的话悬停时下划线会把它一起划上，看着像专辑名的一部分）
+                    FluText {
+                        objectName: "trackRowAlbumSep"
                         Layout.alignment: Qt.AlignVCenter
-                        Layout.maximumWidth: modelData.separator ? Number.POSITIVE_INFINITY : 190
-                        text: modelData.text
+                        Layout.leftMargin: 5
+                        Layout.rightMargin: 5
+                        visible: control.showAlbum && control.album !== ""
+                                 && control.singer !== ""
+                        text: "·"
                         font.pixelSize: 11
-                        font.underline: !modelData.separator && artistMouse.containsMouse
-                        color: (!modelData.separator && artistMouse.containsMouse)
-                               ? Theme.accent : Theme.textTertiary
+                        color: Theme.textTertiary
+                    }
+
+                    FluText {
+                        objectName: "trackRowAlbumLink"
+                        Layout.alignment: Qt.AlignVCenter
+                        Layout.maximumWidth: 240
+                        visible: control.showAlbum && control.album !== ""
+                        text: control.album
+                        font.pixelSize: 11
+                        font.underline: albumMouse.containsMouse
+                        color: albumMouse.containsMouse ? Theme.accent : Theme.textTertiary
                         elide: Text.ElideRight
 
                         MouseArea {
-                            id: artistMouse
+                            id: albumMouse
                             anchors.fill: parent
-                            enabled: !modelData.separator
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: control.artistRequested(modelData.name)
+                            onClicked: control.albumRequested(control.albumId, control.album)
                         }
                     }
                 }
-
-                // 歌手与专辑之间的「 · 」：同样要独立成项，不能拼进专辑名里
-                // （拼进去的话悬停时下划线会把它一起划上，看着像专辑名的一部分）
-                FluText {
-                    objectName: "trackRowAlbumSep"
-                    Layout.alignment: Qt.AlignVCenter
-                    Layout.leftMargin: 5
-                    Layout.rightMargin: 5
-                    visible: control.showAlbum && control.album !== ""
-                             && control.singer !== ""
-                    text: "·"
-                    font.pixelSize: 11
-                    color: Theme.textTertiary
-                }
-
-                FluText {
-                    objectName: "trackRowAlbumLink"
-                    Layout.alignment: Qt.AlignVCenter
-                    Layout.maximumWidth: 240
-                    visible: control.showAlbum && control.album !== ""
-                    text: control.album
-                    font.pixelSize: 11
-                    font.underline: albumMouse.containsMouse
-                    color: albumMouse.containsMouse ? Theme.accent : Theme.textTertiary
-                    elide: Text.ElideRight
-
-                    MouseArea {
-                        id: albumMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: control.albumRequested(control.albumId, control.album)
-                    }
-                }
-
-                Item { Layout.fillWidth: true }
             }
         }
 

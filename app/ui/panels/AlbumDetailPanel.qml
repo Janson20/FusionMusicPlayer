@@ -153,42 +153,73 @@ Item {
                     elide: Text.ElideRight
                 }
 
-                // 歌手名可点（进歌手页）
-                RowLayout {
+                // 歌手名可点（进歌手页）。合辑能挂十几个歌手，同样只铺开前几位，
+                // 其余收进「等 N 人」——这一行是不会换行的 RowLayout，
+                // 撑开之后会横着盖住右边的专辑信息。
+                // 外层 Item 把宽度夹在可用范围内：放得下就自然排，放不下才逐项省略
+                // （只给子项 fillWidth 的话，多出来的宽度会被分给歌手名，
+                //   名字之间被拉出大段空白，反而不像一行）
+                Item {
                     Layout.fillWidth: true
-                    spacing: 0
+                    Layout.preferredHeight: albumArtistRow.implicitHeight
                     visible: control.artistNames.length > 0
 
-                    Repeater {
-                        model: ArtistNames.linkPartsOf(control.artistNames)
-                        delegate: FluText {
-                            required property var modelData
+                    RowLayout {
+                        id: albumArtistRow
+                        anchors.left: parent.left
+                        width: Math.min(implicitWidth, parent.width)
+                        spacing: 0
 
-                            // 分隔符单独成项，不参与悬停高亮也不吃点击
-                            objectName: modelData.separator
-                                ? "albumArtistSep" : "albumArtistLink"
-                            Layout.alignment: Qt.AlignVCenter
-                            Layout.maximumWidth: modelData.separator
-                                ? Number.POSITIVE_INFINITY : 220
-                            text: modelData.text
-                            font.pixelSize: 13
-                            font.underline: !modelData.separator && albumArtistMouse.containsMouse
-                            color: (!modelData.separator && albumArtistMouse.containsMouse)
-                                   ? Theme.accent : Theme.textSecondary
-                            elide: Text.ElideRight
+                        Repeater {
+                            model: ArtistNames.linkPartsOf(control.artistNames)
+                            delegate: FluText {
+                                required property var modelData
 
-                            MouseArea {
-                                id: albumArtistMouse
-                                anchors.fill: parent
-                                enabled: !modelData.separator
-                                hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: artist.openById(modelData.item.id, modelData.item.name)
+                                // 分隔符单独成项，不参与悬停高亮也不吃点击
+                                objectName: modelData.more
+                                    ? "albumArtistMore"
+                                    : (modelData.separator ? "albumArtistSep" : "albumArtistLink")
+                                Layout.alignment: Qt.AlignVCenter
+                                Layout.fillWidth: !modelData.separator
+                                Layout.minimumWidth: modelData.separator ? 0 : 36
+                                Layout.maximumWidth: modelData.separator
+                                    ? Number.POSITIVE_INFINITY : 220
+                                text: modelData.text
+                                font.pixelSize: 13
+                                font.underline: !modelData.separator && !modelData.more
+                                                && albumArtistMouse.containsMouse
+                                color: (!modelData.separator && albumArtistMouse.containsMouse)
+                                       ? Theme.accent : Theme.textSecondary
+                                elide: Text.ElideRight
+
+                                MouseArea {
+                                    id: albumArtistMouse
+                                    anchors.fill: parent
+                                    enabled: !modelData.separator
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        if (modelData.more)
+                                            albumArtistMenu.popup()
+                                        else
+                                            artist.openById(modelData.item.id, modelData.item.name)
+                                    }
+                                }
                             }
                         }
                     }
+                }
 
-                    Item { Layout.fillWidth: true }
+                ArtistMenu {
+                    id: albumArtistMenu
+                    names: {
+                        var out = []
+                        var items = control.artistNames || []
+                        for (var i = 0; i < items.length; i++)
+                            out.push(items[i].name)
+                        return out
+                    }
+                    onArtistChosen: function (name) { artist.openByName(name) }
                 }
 
                 FluText {
