@@ -183,6 +183,12 @@ hiddenimports = [
     # 动态加载的第三方
     "mutagen",
     "cryptography",
+    # requests 现在是**延迟导入**（app/lazy.py 里在函数体内写的字面量 import，
+    # 为的是不把它 0.4 秒的导入开销压在启动链上）。PyInstaller 能识别函数体里的
+    # 字面量 import，这里再显式写一遍当作保险：urllib3 / charset_normalizer /
+    # certifi / idna 由 requests 自己的字节码带出来，certifi 的 cacert.pem
+    # 走 _pyinstaller_hooks_contrib 的 hook-certifi。
+    "requests",
 ]
 hiddenimports += collect_submodules("mutagen")
 hiddenimports += collect_submodules("app")

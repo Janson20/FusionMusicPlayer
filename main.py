@@ -63,11 +63,30 @@ def _check_dependencies() -> bool:
 
 
 def main() -> int:
-    if not _check_dependencies():
-        return 1
-    from app.application import main as run
+    # 启动画面必须赶在**任何重导入之前**：光 requests 就要 0.4 秒、PySide6 还要
+    # 0.15 秒，而这期间窗口根本不存在，用户看到的是"点了图标没反应"。
+    # 见 app/splash.py（纯 Win32，不用 Qt）。
+    from app import paths
+    from app.splash import start as start_splash
+    from app.startup import mark
 
-    return run(sys.argv)
+    data_dir = paths.pop_data_dir_arg(sys.argv)
+    if data_dir:
+        paths.set_data_dir(data_dir)
+    splash = start_splash(paths.data_dir(), paths.resource_dir() / "assets")
+    mark("启动画面已就绪", splash=splash)
+
+    try:
+        if not _check_dependencies():
+            return 1
+        mark("正在加载组件…", splash=splash, progress=0.20)
+        from app.application import main as run
+
+        return run(sys.argv, data_dir=data_dir, splash=splash)
+    finally:
+        # 正常路径上画面早在首帧时就淡出了；这里只兜底早退与异常
+        if splash is not None:
+            splash.close()
 
 
 if __name__ == "__main__":

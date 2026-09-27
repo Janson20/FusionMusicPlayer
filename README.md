@@ -278,6 +278,71 @@ set FUSION_MUSIC_HOME=D:\Music\FusionData && python main.py
   一秒上下，窗口留在屏幕上会显示成「未响应」；先 `hide()` 掉窗口，界面当场消失、
   进程随后无声退出 —— 与改动前「点关闭秒退」的观感一致
 
+### 启动画面与启动速度
+
+程序**点开就有反馈**：进程起来约 130–170 ms 后启动画面出现在屏幕中央，
+主窗口首帧渲染完成时淡出（最少停留 400 ms，免得一闪而过）。
+
+* 画面由 `app/splash.py` 用**纯 Win32（ctypes + GDI）**画出来，**不依赖 Qt**。
+  这不是为了炫技：源码运行从进程创建到主窗口首帧要 1.4 秒上下，这段时间里
+  Qt 窗口**根本还不存在**（PySide6 导入 ~0.25 秒 + QML 编译 ~0.7 秒），
+  想在此之前给用户一点反馈，就只能自己调系统 API（用 Qt 画是"先等 Qt 起来"，
+  等于没有）
+* 窗口建在**独立线程**上（自带消息循环，`GetMessageW` 期间释放 GIL），
+  主线程该 import 什么继续 import；`WS_EX_LAYERED` + `UpdateLayeredWindow`
+  做逐像素透明，圆角与图标边缘平滑
+* 底图是**生成物**：`tools/make_splash.py`（Pillow，只在开发/打包前跑）
+  把卡片与图标渲染成 `assets/splash-{dark,light}.dat`（预乘 BGRA + zlib），
+  运行时只做解压 + `AlphaBlend` 缩放 —— 于是**运行时零新增依赖**，
+  仓库里也没有任何来源不明的二进制。改了脚本必须重新生成，
+  `tests/test_startup.py` 会逐字节校验两者是否还对得上
+* 状态文字（「正在加载界面…」）与进度条由 GDI 按屏幕 DPI **现画**，
+  100% / 150% / 200% 缩放下都清晰（底图按 2 倍逻辑尺寸绘制，缩放后依然干净）
+* 进度跟着真实阶段走：启动画面 → 加载组件 → 准备组件 → 加载界面 →
+  恢复播放会话 → 首帧淡出；两个里程碑之间进度条会缓慢自行前移，
+  不会停在同一个地方看着像死机
+* 深浅色跟随 `data/config.json` 的 `appearance.theme`（`auto` 时读系统的
+  应用主题，即设置 → 个性化里的浅色/深色），进度条用 `appearance.accent`
+* 全程**不可交互**：不抢焦点、鼠标点穿、忽略关闭消息，也不在任务栏留按钮；
+  而且它对启动流程**没有任何控制权** —— 拿不到资源、建窗失败、DPI 查询失败
+  都只是「这次没有画面」，程序照常启动。`FMP_NO_SPLASH=1` 可显式关掉（CI / 自动化）
+
+实测（本机，源码运行，进程创建 → 首帧可见，多次取样；数字会随磁盘缓存与
+机器负载浮动，看量级即可）：
+
+| 阶段 | 优化前 | 现在 |
+| --- | --- | --- |
+| 启动画面可见（有反馈） | —— | **130 ~ 170 ms** |
+| import（PySide6 / FluentUI / 音源…） | 428 ms | ~250 ms |
+| 装配（配置 / 曲库 / 播放器 / 11 个控制器） | 150 ms | ~160 ms |
+| `engine.load(Main.qml)` | 1190 ms | ~720 ms |
+| **首帧（真能用）** | ~2127 ms | **~1350 ~ 1520 ms** |
+
+打包版（onedir，`pyinstaller build.spec`）热启动实测首帧 ~1.34 秒、冷启动 ~3.7 秒
+（冷启动那一次是整包 200 MB 首次落盘），启动画面同样在几百毫秒内出现。
+
+这 0.7 秒是这么省出来的（每一项都先量再改，数字见上表）：
+
+1. **requests 延迟导入**：`import requests` 实测 0.4 秒（还要连带 urllib3 /
+   charset_normalizer / certifi），而它只在真的去请求音源时才有用，原先却压在
+   启动链上（`app.bridges.*` → `app.core.models` → `app.sources.base`）。
+   `app/lazy.py` 提供一个模块代理，5 个模块的 `import requests` 改成
+   `from ..lazy import requests`，**调用点一个字都不用改**（`requests.get`、
+   `except requests.RequestException`、注解里的 `requests.Session` 全都照旧）。
+   然后在进 `engine.load` 之前开一个后台线程把它预导进来：QML 编译那 0.7 秒
+   主线程几乎都在 C++ 里、GIL 是空的，这 0.4 秒基本白捡。
+   **预热的位置很关键** —— 放早了会和装配阶段抢 GIL，实测把装配从 150 ms 拖到 690 ms
+2. **页面与子窗口惰性实例化**：`Main.qml` 里 6 个页面 + 设置窗口（1100 行）
+   + 登录窗口（400 行）原本在启动时全部编译并实例化，实测占 `engine.load`
+   约 0.3 秒，而首帧只看得到其中一个。现在页面走 `components/LazyPage.qml`
+   （第一次切过去才加载；加载过就一直留着，切走**不销毁** ——
+   搜索词、滚动位置、展开状态都得原样保留），两个窗口走 `Qt.createComponent`
+   （`Loader` 装不了 `Window`）
+3. **启动画面**：纯 Win32，Qt 侧一行都不用改（见上）
+
+QML 编译缓存（`*.qmlc`）Qt 6 **默认就开着**，不需要额外配置
+（实测强制打开没有收益，缓存目录里本来就有 60+ 个 `.qmlc`）。
+
 ### 设置
 外观 / 播放 / 音源 / 账号 / 歌词 / 本地音乐 / 存储 / 关于，共 8 个分区
 （窗口与托盘在「外观 → 窗口」里）。
@@ -289,10 +354,23 @@ set FUSION_MUSIC_HOME=D:\Music\FusionData && python main.py
 ```bash
 python main.py                       # 运行
 python tests/test_core.py            # 核心逻辑回归（离线，67 项）
+python tests/test_startup.py         # 启动链回归（离线：启动画面资源 / 延迟导入 / 计时）
 python tests/test_ui_smoke.py        # QML 界面冒烟（需要显示环境）
 python tools/check_qml_signals.py    # QML 信号处理器静态检查
 python tools/account_probe.py        # 排查网易云账号识别问题（不打印 Cookie）
 ```
+
+启动耗时怎么量（改了启动链上的任何东西都该跑一遍）：
+
+```bash
+FMP_TRACE_STARTUP=1 python main.py         # 每个阶段立刻打一行到 stderr，同时写进日志
+python tools/probe_startup.py src          # 外部观测：启动画面 / 主窗口 / 画面是否退场
+python tools/probe_startup.py exe --repeat 3   # 打包版，3 次取中位数
+python tools/make_splash.py --check        # 启动画面底图是否与生成脚本一致
+```
+
+`FMP_TRACE_STARTUP=1` 打的是**从进程创建算起**的绝对毫秒数（打包引导、解释器启动、
+import、QML 编译全算在内），不是各阶段自己的耗时 —— 只有这个数字才等于用户等待的时间。
 
 几个**可行性探测脚本**（都是量测性质，改动了相关模块之后可以用来复核；不参与打包）:
 
@@ -300,6 +378,7 @@ python tools/account_probe.py        # 排查网易云账号识别问题（不�
 python tools/probe_audiodecoder.py [文件]   # QAudioDecoder 能否解成 8kHz 单声道 float
 python tools/probe_loudness_cost.py [文件]  # 真机上解码 + 纯 Python 响度运算的耗时
 python tools/probe_stream_decode.py [url]   # 能否直接解 https 流并在够用后断开
+python tools/probe_startup.py src|exe       # 启动耗时（启动画面 / 主窗口 / 画面退场）
 python tools/validate_loudness.py           # 响度实现 ↔ pyloudnorm 交叉验证（见下）
 ```
 
@@ -333,6 +412,15 @@ LRC 解析（补零、offset、一行多标签、翻译配对、当前行二分�
 **自动更新**（版本号解析与预发布比较、按发行形态挑资产、站外地址与 http 一律拒绝、
 SHA-256 校验、发行形态判定、更新脚本必须排除 `data/` 且失败回滚、解压防目录穿越）
 与曲目模型，**不依赖 Qt 界面也不联网**，可直接交给 pytest。
+
+`tests/test_startup.py` 守的是启动链上那些「改一行就悄悄退化、平时看不出来」的东西：
+`assets/splash-*.dat` 与 `tools/make_splash.py` 的输出是否**逐字节一致**（底图是生成物，
+改了脚本忘了重新生成的话，界面只会继续用旧图）、底图是否满足**预乘 alpha**
+（不满足的话半透明边缘会发白）、布局是否落在卡片内部（补 alpha 依赖这条）、
+`load_art` 碰到损坏文件是否老实返回 `None`、主题与强调色是否跟着 `config.json` 走、
+延迟导入代理是不是真的延迟，以及**最关键的一条**：在干净子进程里
+`import app.application` 不许把 `requests` 拉进 `sys.modules` —— 那 0.4 秒就是这么丢的。
+同样是离线测试，不依赖 Qt 界面也不联网。
 
 `tests/test_ui_smoke.py` 会启动真实界面并校验窗口、导航与覆盖层行为，守住这些
 曾经真实出现过的缺陷：设置 / 登录窗口跟着主窗口一起弹出来；关闭后无法再打开
@@ -388,6 +476,12 @@ onPageRequested: function (pageId) { app.go(pageId) }
 > `app/sources/` 下取自 FMCL 的 8 个文件保持与上游逐字一致（仅改相对导入），
 > 因此 `pyflakes` 会对其报出上游原有的未使用导入与变量，这是有意保留的，
 > CI 也只对本项目自有代码做门禁。
+>
+> 例外是 `base.py` / `utils.py` / `wy.py` 里的 `import requests`：为把 0.4 秒的
+> 导入开销移出启动链，它换成了 `from ..lazy import requests` 的延迟代理，
+> 并补上 `from __future__ import annotations`（否则注解里那些
+> `requests.Session` 会在 def 时求值，等于没延迟）。逻辑与调用点均未改动，
+> 三处都已在文件头注明。
 
 ---
 
@@ -586,10 +680,15 @@ data/
 
 ```
 FusionMusicPlayer/
-├── main.py                      入口（含依赖自检）
+├── main.py                      入口（先起启动画面 → 依赖自检 → 装配）
 ├── requirements.txt
 ├── app/
 │   ├── application.py           QGuiApplication + QML 引擎装配
+│   ├── splash.py                启动画面：底图解析 / 主题 / 对外工厂
+│   ├── splash_window.py         启动画面：窗口、消息循环、GDI 绘制
+│   ├── splash_win32.py          启动画面用到的 Win32 常量 / 结构体 / 函数原型
+│   ├── startup.py               启动阶段计时（FMP_TRACE_STARTUP=1）
+│   ├── lazy.py                  延迟导入代理（requests 不在启动链上）
 │   ├── paths.py                 程序 / 数据目录解析
 │   ├── config.py                设置持久化（浅合并 + 点号路径）
 │   ├── security/vault.py        凭据加密仓库
@@ -630,10 +729,11 @@ FusionMusicPlayer/
 │   └── ui/                      QML 界面
 │       ├── Main.qml qmldir Theme.qml ArtistNames.js
 │       ├── components/          标题栏 / 导航 / 播放栏 / 曲目行 / 对话框…
+│       │                        LazyPage.qml —— 页面按需实例化的容器
 │       ├── pages/               发现 / 漫游 / 搜索 / 我的音乐 / 本地 / 队列
 │       ├── panels/              展开播放页 / 歌单详情 / 歌手详情 / 专辑详情
-│       └── windows/             设置 / 登录
-└── assets/icon.ico icon.png
+│       └── windows/             设置 / 登录（启动时不实例化，用到才建）
+└── assets/icon.ico icon.png splash-dark.dat splash-light.dat
 ```
 
 ---

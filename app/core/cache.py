@@ -15,8 +15,7 @@ import threading
 from pathlib import Path
 from typing import Dict, Optional
 
-import requests
-
+from ..lazy import requests  # 延迟导入：requests 本体要 0.4 秒，见 app/lazy.py
 from .. import paths
 
 logger = logging.getLogger(__name__)

@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-import requests
+from ..lazy import requests  # 延迟导入：requests 本体要 0.4 秒，见 app/lazy.py
 
 logger = logging.getLogger(__name__)
 

@@ -12,14 +12,19 @@ Fusion Music Player 采用 **GPL-3.0-only** 许可（见 `LICENSE`）。
 
 | 本仓库文件 | 上游文件 | 改动 |
 |---|---|---|
-| `app/sources/base.py` | `ui/music_source/base.py` | 仅把包内 import 改为相对导入 |
-| `app/sources/utils.py` | `ui/music_source/utils.py` | 无改动 |
-| `app/sources/wy.py` | `ui/music_source/wy.py` | 仅把包内 import 改为相对导入 |
-| `app/sources/kw.py` | `ui/music_source/kw.py` | 同上 |
+| `app/sources/base.py` | `ui/music_source/base.py` | 包内 import 改相对导入；`import requests` 改延迟导入代理并补 `from __future__ import annotations`（见 `app/lazy.py`） |
+| `app/sources/utils.py` | `ui/music_source/utils.py` | 同上（`requests` 一处） |
+| `app/sources/wy.py` | `ui/music_source/wy.py` | 同上（`requests` 一处） |
+| `app/sources/kw.py` | `ui/music_source/kw.py` | 仅把包内 import 改为相对导入 |
 | `app/sources/kg.py` | `ui/music_source/kg.py` | 同上 |
 | `app/sources/mg.py` | `ui/music_source/mg.py` | 同上 |
 | `app/sources/tx.py` | `ui/music_source/tx.py` | 同上 |
 | `app/sources/bili.py` | `ui/music_source/bili.py` | 同上 |
+
+> 上述 `requests` 的改动只动 import 形式与注解求值时机，调用点、协议与解析逻辑
+> 一字未改（`requests.get(...)`、`except requests.RequestException` 等写法照旧）。
+> 目的是把 `import requests` 那 0.4 秒移出启动链，理由与实测见 README 的
+> 「启动画面与启动速度」。
 
 `app/sources/__init__.py` 中的跨源兜底算法（`resolve_track` /
 `_quality_attempt_order` / `duration_matches` 的调用约定）同样移植自 FMCL，

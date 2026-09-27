@@ -6,13 +6,18 @@
 # Licensed under GPL-3.0-only, same as this project.
 # Only the intra-package imports were rewritten to relative form; the crypto,
 # endpoint and parsing logic is unchanged so behaviour stays identical.
+#
+# 本地改动：``import requests`` 换成 app.lazy 的延迟代理，并补上
+# ``from __future__ import annotations``（见 app/lazy.py）。
 # ---------------------------------------------------------------------------
+from __future__ import annotations
+
 import hashlib
 import random
 import string
 from typing import Dict, Optional
 
-import requests
+from ..lazy import requests
 
 # ─── User-Agent 池 ────────────────────────────────────
 

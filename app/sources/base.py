@@ -6,16 +6,21 @@
 # Licensed under GPL-3.0-only, same as this project.
 # Only the intra-package imports were rewritten to relative form; the crypto,
 # endpoint and parsing logic is unchanged so behaviour stays identical.
+#
+# 本地改动：``import requests`` 换成 app.lazy 的延迟代理，并补上
+# ``from __future__ import annotations`` —— requests 自己就要 0.4 秒，
+# 而它只在这几个方法被调用时才有用，不该压在启动链上（见 app/lazy.py）。
 # ---------------------------------------------------------------------------
+from __future__ import annotations
+
 import abc
 import logging
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
-import requests
-
 from .utils import create_session
+from ..lazy import requests
 
 logger = logging.getLogger("music_source")
 

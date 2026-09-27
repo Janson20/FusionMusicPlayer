@@ -83,6 +83,23 @@ def set_data_dir(path: str | os.PathLike | None) -> None:
     _DATA_DIR_OVERRIDE = Path(path).expanduser().resolve() if path else None
 
 
+def pop_data_dir_arg(argv: list[str]) -> Optional[str]:
+    """从 argv 里取出并移除 ``--data-dir X``，返回 X（没有则 None）。
+
+    入口要在**导入 Qt 之前**把启动画面画出来，而画面用哪张底图取决于
+    ``data/config.json`` 里的主题与强调色 —— 所以数据目录得提前定下来。
+    这里解析一次，随后把结果原样传给 :class:`app.application.Application`，
+    避免两边各解析一遍却得出不同结论。
+    """
+    if "--data-dir" in argv:
+        index = argv.index("--data-dir")
+        if index + 1 < len(argv):
+            value = argv[index + 1]
+            del argv[index : index + 2]
+            return value
+    return None
+
+
 def data_dir() -> Path:
     """数据根目录：默认为『程序当前目录』。
 

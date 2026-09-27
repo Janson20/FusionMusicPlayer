@@ -6,7 +6,13 @@
 # Licensed under GPL-3.0-only, same as this project.
 # Only the intra-package imports were rewritten to relative form; the crypto,
 # endpoint and parsing logic is unchanged so behaviour stays identical.
+#
+# 本地改动：``import requests`` 换成 app.lazy 的延迟代理，并补上
+# ``from __future__ import annotations`` —— 注解里那些 requests.Session /
+# requests.Response 会在 def 时求值，不延迟的话代理等于没延（见 app/lazy.py）。
 # ---------------------------------------------------------------------------
+from __future__ import annotations
+
 import datetime
 import json
 import logging
@@ -19,10 +25,9 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional, Tuple
 from urllib.parse import urlencode
 
-import requests
-
 from .base import BaseMusicSource, MusicInfo
 from .utils import decode_name, format_singer, wy_eapi, wy_weapi
+from ..lazy import requests
 
 logger = logging.getLogger("music_source.wy")
 

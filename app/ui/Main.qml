@@ -46,7 +46,7 @@ FluWindow {
 
     // ── 标题栏（含草图里的「设置按钮」）──────────────────
     appBar: AppTitleBar {
-        onSettingsClicked: settingsWindow.showWindow()
+        onSettingsClicked: root.openSettings()
     }
 
     // ── 主题色板（FluTheme.primaryColor 取 themeColor.dark）──
@@ -125,8 +125,8 @@ FluWindow {
             else
                 root.showInfo(message, 1800)
         }
-        function onLoginRequested() { loginWindow.showWindow() }
-        function onSettingsRequested() { settingsWindow.showWindow() }
+        function onLoginRequested() { root.openLogin() }
+        function onSettingsRequested() { root.openSettings() }
     }
 
     // ── 主内容区 ────────────────────────────────────────
@@ -156,7 +156,7 @@ FluWindow {
                 historyCount: library.historyModel.count
                 localCount: library.localModel.count
                 onPageRequested: function (pageId) { app.go(pageId) }
-                onLoginRequested: loginWindow.showWindow()
+                onLoginRequested: root.openLogin()
             }
 
             StackLayout {
@@ -178,12 +178,32 @@ FluWindow {
                     }
                 }
 
-                DiscoverPage { }
-                RoamPage { }
-                SearchPage { }
-                LibraryPage { }
-                LocalPage { }
-                QueuePage { }
+                // 页面按需加载：列表里只有当前页（以及访问过的页）是活的。
+                // 启动时全部实例化实测要多花约 0.3 秒（见 components/LazyPage.qml）
+                LazyPage {
+                    current: pageStack.currentIndex === 0
+                    source: "pages/DiscoverPage.qml"
+                }
+                LazyPage {
+                    current: pageStack.currentIndex === 1
+                    source: "pages/RoamPage.qml"
+                }
+                LazyPage {
+                    current: pageStack.currentIndex === 2
+                    source: "pages/SearchPage.qml"
+                }
+                LazyPage {
+                    current: pageStack.currentIndex === 3
+                    source: "pages/LibraryPage.qml"
+                }
+                LazyPage {
+                    current: pageStack.currentIndex === 4
+                    source: "pages/LocalPage.qml"
+                }
+                LazyPage {
+                    current: pageStack.currentIndex === 5
+                    source: "pages/QueuePage.qml"
+                }
             }
 
             // 歌单详情覆盖层（从发现页打开）
@@ -369,8 +389,7 @@ FluWindow {
     // 最小化到托盘：窗口 hide() 掉（不是关掉），子窗口一起收走，
     // 否则「主窗口进了托盘、设置窗口还杵在桌面上」很怪
     function hideToTray() {
-        settingsWindow.hide()
-        loginWindow.hide()
+        root.closeAuxWindows()
         root.hide()
         if (!root.trayHintShown && tray.supportsMessages) {
             root.trayHintShown = true
@@ -401,8 +420,7 @@ FluWindow {
     // 窗口当场销毁，所以看着是「秒退」—— 这里补回同样的观感。
     function quitApp() {
         root.saveWindowState()
-        settingsWindow.hide()
-        loginWindow.hide()
+        root.closeAuxWindows()
         root.hide()
         tray.visible = false
         app.quitApplication()
@@ -471,12 +489,45 @@ FluWindow {
         }
     }
 
-    SettingsWindow {
-        id: settingsWindow
+    // ── 惰性窗口（设置 / 登录）────────────────────────────
+    //
+    // SettingsWindow.qml 有 1100 行、LoginWindow.qml 400 行，之前是在这里直接
+    // 实例化的：启动时多花约 0.3 秒编译一整棵从来不显示的对象树（两个窗口的
+    // 根都是 visible: false）。改成第一次真要用时才建 —— 绝大多数启动根本用不到。
+    //
+    // 不能用 Loader：Loader 只装 Item，而 Window 不是 Item。这里走 Qt.createComponent。
+    property var settingsWindow: null
+    property var loginWindow: null
+
+    function ensureWindow(existing, url) {
+        if (existing)
+            return existing
+        var component = Qt.createComponent(Qt.resolvedUrl(url))
+        if (component.status !== Component.Ready) {
+            console.error("窗口创建失败 " + url + "：" + component.errorString())
+            return null
+        }
+        return component.createObject(root)
     }
 
-    LoginWindow {
-        id: loginWindow
+    function openSettings() {
+        settingsWindow = ensureWindow(settingsWindow, "windows/SettingsWindow.qml")
+        if (settingsWindow)
+            settingsWindow.showWindow()
+    }
+
+    function openLogin() {
+        loginWindow = ensureWindow(loginWindow, "windows/LoginWindow.qml")
+        if (loginWindow)
+            loginWindow.showWindow()
+    }
+
+    // 藏到托盘 / 退出前收子窗口：没建过的就别建了（否则退出时反而多花一笔）
+    function closeAuxWindows() {
+        if (settingsWindow)
+            settingsWindow.hide()
+        if (loginWindow)
+            loginWindow.hide()
     }
 
     // ── 关闭主窗口的询问框 ──────────────────────────────

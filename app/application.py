@@ -13,7 +13,7 @@ from PySide6.QtQml import QQmlApplicationEngine
 
 import FluentUI
 
-from . import paths
+from . import paths, startup
 from .bridges.album import AlbumController
 from .bridges.app import AppController
 from .bridges.artist import ArtistController
@@ -29,6 +29,7 @@ from .core.account import AccountManager
 from .core.loudness_service import LoudnessService
 from .core.player import PlayerEngine
 from .core.store import Library
+from .lazy import prewarm
 
 logger = logging.getLogger("fusion")
 
@@ -65,12 +66,14 @@ def setup_logging(level: str = "INFO") -> None:
 class Application(QObject):
     """持有全部长生命周期对象，保证不被 GC。"""
 
-    def __init__(self, argv, data_dir: Optional[str] = None):
+    def __init__(self, argv, data_dir: Optional[str] = None, splash=None):
         super().__init__()
+        self.splash = splash
         if data_dir:
             paths.set_data_dir(data_dir)
         paths.ensure_dirs()
 
+        startup.mark("正在准备组件…", splash=splash, progress=0.35)
         self.config = Config()
         setup_logging(self.config.get("advanced.log_level", "INFO"))
 
@@ -153,6 +156,7 @@ class Application(QObject):
         ctx.setContextProperty("updater", self.updater)
 
         self.engine.warnings.connect(self._on_qml_warning)
+        startup.mark("正在加载界面…", splash=splash, progress=0.55)
 
     # ── 事件接线 ────────────────────────────────────────────
 
@@ -222,6 +226,42 @@ class Application(QObject):
         except Exception as e:
             logger.debug("同步原唱开关失败: %s", e)
 
+    # ── 启动画面 ────────────────────────────────────────────
+
+    def _watch_first_frame(self) -> None:
+        """首帧一到就撤启动画面。
+
+        用 ``frameSwapped`` 而不是窗口 ``visible``：QML 窗口在 ``engine.load`` 里
+        就已经 show 了，但那一刻场景图还没画出来 —— 此时撤画面会闪一下空窗口。
+        信号在第一次触发后就断开（它每帧都发，留着等于给每帧加一次 Python 调用）；
+        Qt 万一没发信号（比如窗口被系统挡在最小化状态），有 8 秒兜底。
+        """
+        splash = self.splash
+        if splash is None:
+            return
+        try:
+            self._frame_window = self.engine.rootObjects()[0]
+            self._frame_window.frameSwapped.connect(self._finish_splash)
+        except Exception as e:
+            logger.debug("接首帧信号失败，改用兜底计时收启动画面: %s", e)
+        QTimer.singleShot(8000, self._finish_splash)
+
+    @Slot()
+    def _finish_splash(self) -> None:
+        """可重复调用：第一次就把画面交出去淡出，之后是空操作。"""
+        splash, self.splash = self.splash, None
+        if splash is None:
+            return
+        window, self._frame_window = getattr(self, "_frame_window", None), None
+        if window is not None:
+            try:
+                window.frameSwapped.disconnect(self._finish_splash)
+            except Exception:
+                pass
+        startup.mark("首帧已渲染")
+        startup.report()
+        splash.finish()
+
     # ── 启动 ────────────────────────────────────────────────
 
     def run(self) -> int:
@@ -235,13 +275,24 @@ class Application(QObject):
         main_qml = paths.qml_dir() / "Main.qml"
         if not main_qml.exists():
             logger.error("找不到界面文件: %s", main_qml)
+            self._finish_splash()
             return 2
+
+        # requests（0.4 秒）已经不在启动链上了（见 app/lazy.py），这里让它在
+        # 后台线程里先导进来。**必须放在 engine.load 之前、构造之后**：QML 编译
+        # 那 1 秒主线程几乎都在 C++ 里（GIL 是空的），放这儿基本白捡；而构造阶段
+        # 是纯 Python，放在那儿两边会抢 GIL，反而把构造拖慢一倍（实测 150→690 ms）。
+        # 恢复会话要建网易云音源（requests.Session），它必须在那之前导完。
+        prewarm("requests")
 
         self.engine.load(QUrl.fromLocalFile(str(main_qml)))
         if not self.engine.rootObjects():
             logger.error("QML 加载失败，请查看上方告警")
+            self._finish_splash()  # 失败也要收掉画面，否则它会一直压在最上层
             return 3
 
+        startup.mark("正在恢复播放会话…", splash=self.splash, progress=0.90)
+        self._watch_first_frame()
         self._apply_source_prefs()
         self.account.restore()
         # 界面起来之后再挂自动更新：启动时的取数据优先
@@ -276,13 +327,11 @@ class Application(QObject):
         except Exception as e:
             logger.warning("保存配置失败: %s", e)
 
-def main(argv=None) -> int:
+def main(argv=None, data_dir: Optional[str] = None, splash=None) -> int:
     argv = list(argv if argv is not None else sys.argv)
-    data_dir = None
-    if "--data-dir" in argv:
-        i = argv.index("--data-dir")
-        if i + 1 < len(argv):
-            data_dir = argv[i + 1]
-            del argv[i : i + 2]
-    app = Application(argv, data_dir=data_dir)
+    if data_dir is None:
+        # 兼容直接调 application.main 的调用方（tests/、工具脚本）；
+        # 走 main.py 时它已经解析过并把结果传进来了。
+        data_dir = paths.pop_data_dir_arg(argv)
+    app = Application(argv, data_dir=data_dir, splash=splash)
     return app.run()
