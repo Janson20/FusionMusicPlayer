@@ -23,6 +23,7 @@ from app.core.queue import PlayMode, PlayQueue, mode_from_name  # noqa: E402
 from app.security.vault import CredentialVault  # noqa: E402
 
 
+
 # ──────────────────────────────────────────────────────────────
 # 凭据加密仓库
 # ──────────────────────────────────────────────────────────────
@@ -1603,8 +1604,116 @@ def test_release_notes_excerpt_and_size():
 
 
 # ──────────────────────────────────────────────────────────────
-# 自动更新：暂存与替换脚本
+# 打包后的资源路径（托盘 / 任务栏图标）
 # ──────────────────────────────────────────────────────────────
+
+
+def test_resource_dir_follows_pyinstaller_layout():
+    """打包后 ``assets/`` 不在 exe 旁边，而在 ``_internal/`` 或 ``_MEIxxxx`` 里。
+
+    守的是「打包成 exe 之后最小化到托盘没有图标」这个真机故障：
+    PyInstaller 6 的 onedir 把数据文件（含 ``assets/``）放进 ``_internal/``，
+    onefile 放进 ``%TEMP%\\_MEIxxxx`` —— 按 ``program_dir() / "assets"`` 去找，
+    两种打包形态都找不到图标文件，界面照常启动、托盘上却是一个空白位。
+    实测过：``dist/FusionMusicPlayer/`` 下只有 exe 与 ``_internal/``。
+    """
+    import sys as _sys
+
+    from app import paths
+
+    saved = (getattr(_sys, "frozen", None), getattr(_sys, "_MEIPASS", None), _sys.executable)
+    root = Path(tempfile.mkdtemp(prefix="fusion_layout_"))
+    try:
+        # 开发态：资源就在项目根目录
+        _sys.frozen = False                              # type: ignore[attr-defined]
+        assert paths.resource_dir() == paths.program_dir()
+
+        # onedir：exe 在 <app>/，资源在 <app>/_internal/
+        exe_dir = root / "app"
+        bundle = exe_dir / "_internal"
+        (bundle / "assets").mkdir(parents=True)
+        (bundle / "assets" / "icon.ico").write_bytes(b"ico")
+        exe = exe_dir / "FusionMusicPlayer.exe"
+        exe.write_bytes(b"MZ")
+
+        _sys.frozen = True                               # type: ignore[attr-defined]
+        _sys.executable = str(exe)
+        _sys._MEIPASS = str(bundle)                      # type: ignore[attr-defined]
+        # 比 resolve() 之后的路径：Windows 上临时目录常拿到 8.3 短名
+        # （C:\Users\ADMINI~1\...），而 program_dir() 内部会 resolve 成长名
+        assert paths.program_dir() == exe_dir.resolve(), "用户数据仍然要挨着 exe 放"
+        assert paths.resource_dir() == bundle
+        assert (paths.resource_dir() / "assets" / "icon.ico").exists()
+        assert not (paths.program_dir() / "assets").exists(), "这正是以前的写法找不到图标的原因"
+
+        # onefile：资源在 %TEMP%\_MEIxxxx
+        _sys._MEIPASS = str(root / "_MEI123456")         # type: ignore[attr-defined]
+        assert paths.resource_dir() == root / "_MEI123456"
+
+        # 没有 _MEIPASS 的极端情况：退回 exe 目录，别抛异常
+        del _sys._MEIPASS
+        assert paths.resource_dir() == exe_dir.resolve()
+    finally:
+        _sys.executable = saved[2]
+        for name, value in (("frozen", saved[0]), ("_MEIPASS", saved[1])):
+            if value is None:
+                try:
+                    delattr(_sys, name)
+                except AttributeError:
+                    pass
+            else:
+                setattr(_sys, name, value)
+
+
+def test_tray_icon_source_uses_bundled_assets():
+    """托盘图标的地址必须指向打包进程序的那份 ``assets/icon.ico``。
+
+    这里不启动界面，只把 ``AppController.trayIconSource`` 这条取值链走通：
+    它以前用 ``program_dir()``，打包后拿到空串 —— 托盘图标就是空的。
+    """
+    import sys as _sys
+
+    from app import paths
+    from app.bridges.app import AppController
+
+    saved = (getattr(_sys, "frozen", None), getattr(_sys, "_MEIPASS", None), _sys.executable)
+    root = Path(tempfile.mkdtemp(prefix="fusion_tray_"))
+
+    class _Config:
+        def get(self, key, default=None):
+            return default
+
+    try:
+        exe_dir = root / "app"
+        bundle = exe_dir / "_internal"
+        (bundle / "assets").mkdir(parents=True)
+        icon = bundle / "assets" / "icon.ico"
+        icon.write_bytes(b"\x00\x00\x01\x00")            # 内容无所谓，只看能不能定位
+
+        _sys.frozen = True                               # type: ignore[attr-defined]
+        _sys.executable = str(exe_dir / "FusionMusicPlayer.exe")
+        _sys._MEIPASS = str(bundle)                      # type: ignore[attr-defined]
+
+        controller = AppController(_Config())
+        source = controller.trayIconSource
+        assert source.startswith("file:"), source
+        assert "icon.ico" in source, source
+        assert "_internal" in source or "_MEI" in source, source
+
+        # 图标文件真的不在 exe 旁边时，也必须是「找得到打包里的那份」
+        assert not (paths.program_dir() / "assets" / "icon.ico").exists()
+    finally:
+        _sys.executable = saved[2]
+        for name, value in (("frozen", saved[0]), ("_MEIPASS", saved[1])):
+            if value is None:
+                try:
+                    delattr(_sys, name)
+                except AttributeError:
+                    pass
+            else:
+                setattr(_sys, name, value)
+
+
 
 
 def test_update_script_never_touches_user_data():

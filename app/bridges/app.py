@@ -89,10 +89,21 @@ def _system_tray_available() -> bool:
     查询走 QtWidgets 的 ``QSystemTrayIcon``（静态方法，不需要 QApplication）；
     界面那边用的是 ``Qt.labs.platform`` 的 ``SystemTrayIcon``，两者问的是同一个
     平台接口，结论一致。QtWidgets 缺失时按「没有托盘」处理：这时只能直接退出。
+
+    **必须先确认存在 GUI 应用实例**：只有 QCoreApplication（测试 / 脚本）时，
+    这个静态查询会在 Qt 内部空指针解引用 —— 是硬崩，不是异常，try/except
+    拦不住（实测 0xC0000005）。注意不能用 ``QApplication.instance() is None`` 判断：
+    它和 ``QCoreApplication.instance()`` 是同一个静态方法，只有一个 QCoreApplication
+    时照样返回那个对象（类型不对而已），必须用 ``isinstance(..., QGuiApplication)``。
+    真机上界面起来时这条判断永远为真，不影响行为。
     """
     try:
-        from PySide6.QtWidgets import QSystemTrayIcon
+        from PySide6.QtGui import QGuiApplication
+        from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
+        if not isinstance(QApplication.instance(), QGuiApplication):
+            logger.debug("没有 GUI 应用实例，按「系统没有托盘」处理")
+            return False
         return bool(QSystemTrayIcon.isSystemTrayAvailable())
     except Exception as e:  # pragma: no cover - 依赖运行环境
         logger.debug("查询系统托盘失败: %s", e)
@@ -121,10 +132,16 @@ class AppController(QObject):
         # 界面按它决定要不要给托盘相关的选项（见 close_decision）。
         self._tray_available = _system_tray_available()
 
-        # 跟随系统深浅色：FluThemeType 没有 Auto，需要我们自己读取系统配色
+        # 跟随系统深浅色：FluThemeType 没有 Auto，需要我们自己读取系统配色。
+        # 注意先确认真的**有 QGuiApplication**：只有 QCoreApplication 时
+        # ``QGuiApplication.styleHints()`` 返回空指针，PySide6 会在里面直接崩
+        # （不是抛异常，try/except 拦不住），测试与脚本里构造这个控制器就会踩到。
         try:
-            hints = QGuiApplication.styleHints()
-            hints.colorSchemeChanged.connect(self.systemDarkChanged)
+            if isinstance(QGuiApplication.instance(), QGuiApplication):
+                hints = QGuiApplication.styleHints()
+                hints.colorSchemeChanged.connect(self.systemDarkChanged)
+            else:
+                logger.debug("没有 QGuiApplication，跳过系统配色监听")
         except Exception as e:  # pragma: no cover
             logger.debug("无法监听系统配色变化: %s", e)
 
@@ -209,8 +226,13 @@ class AppController(QObject):
 
     @Property(str, constant=True)
     def trayIconSource(self) -> str:  # noqa: N802
-        """托盘图标地址。优先 .ico —— Windows 会按 DPI 从里面挑合适的那一档。"""
-        assets = paths.program_dir() / "assets"
+        """托盘图标地址。优先 .ico —— Windows 会按 DPI 从里面挑合适的那一档。
+
+        资源要找 :func:`paths.resource_dir` 而不是 ``program_dir()``：
+        打包后 ``assets/`` 在 ``_internal/``（onedir）或 ``%TEMP%\\_MEIxxxx``
+        （onefile）里，按 exe 目录找会拿到空串 —— 托盘上就是一个没有图标的空白位。
+        """
+        assets = paths.resource_dir() / "assets"
         for name in ("icon.ico", "icon.png"):
             candidate = assets / name
             if candidate.exists():

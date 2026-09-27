@@ -248,6 +248,10 @@ set FUSION_MUSIC_HOME=D:\Music\FusionData && python main.py
   设置 / 登录窗口会跟着一起收走，免得主窗口进了托盘它们还杵在桌面上
 * 托盘图标常驻（设置里可关）：左键 / 双击回主窗口，右键菜单直接
   「显示主窗口 / 播放·暂停 / 上一首 / 下一首 / 退出」，悬停显示当前歌名与歌手
+* 托盘图标与窗口图标都从**打包进程序的资源**里取（`paths.resource_dir()`）：
+  PyInstaller 6 的 onedir 把 `assets/` 放进 `_internal/`，onefile 放进
+  `%TEMP%\_MEIxxxx`，**都不在 exe 旁边** —— 按 exe 目录去找的话，打包版启动正常、
+  托盘上却是一个没有图标的空白位（源码运行看不出来，只有打包后才复现）
 * 托盘用 QML 的 `Qt.labs.platform`（系统原生菜单），**不引入 QtWidgets**：
   `QSystemTrayIcon` 的上下文菜单只吃 `QMenu`，而 `QMenu` 是 QWidget，用它就得把整个
   程序从 `QGuiApplication` 换成 `QApplication`；而且主窗口藏进托盘之后，QML 自己的
@@ -405,6 +409,14 @@ python tools/audit_bundle.py dist/FusionMusicPlayer     # 校验依赖是否齐�
 Python 侧看不到），打包时 `Qt6QuickDialogs2*.dll` 与 `qml/QtQuick/Dialogs/`
 都要留着 —— 它们不在 `DROP_QT_DLLS` / `DROP_DATA_PARTS` 里，默认会被收进来，
 别手滑加进去。
+
+**找资源要用 `paths.resource_dir()`，不是 `program_dir()`**：PyInstaller 6 的
+onedir 把数据文件（`assets/`、`app/ui/`、FluentUI 的 qml）放进 `_internal/`，
+onefile 放进 `%TEMP%\_MEIxxxx`，两者都不在 exe 旁边 —— 实测打包后
+`dist/FusionMusicPlayer/` 下只有 exe 与 `_internal/`。
+`program_dir()` 是给**用户数据**用的（`data/`、`downloads/`，必须挨着 exe 放，
+这样才是绿色便携的）。用错地方的后果是「源码跑得好好的、打包后托盘图标空白」，
+启动日志里现在会写明两者的实际路径，并单独告警图标没找到。
 
 `tools/audit_bundle.py` 会遍历产物里每个 DLL/PYD，解析 PE 导入表并报告
 「既没打包、也不属于 Windows 系统」的依赖。上面那条 ShaderTools 就是这么

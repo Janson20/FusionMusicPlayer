@@ -29,10 +29,29 @@ _DATA_DIR_OVERRIDE: Optional[Path] = None
 
 
 def program_dir() -> Path:
-    """程序所在目录（打包后为 exe 目录，开发时为项目根目录）。"""
+    """程序所在目录（打包后为 exe 目录，开发时为项目根目录）。
+
+    注意这是**放用户数据**的地方（``data/``、``downloads/``），不是放打包进去的
+    只读资源的地方 —— 找 ``assets/`` 请用 :func:`resource_dir`。
+    """
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent.parent
+
+
+def resource_dir() -> Path:
+    """打包进程序的**只读资源**（``assets/``、``app/ui/``）所在目录。
+
+    开发时就是项目根目录；打包之后**不是** exe 所在目录：PyInstaller 6 的
+    onedir 把数据文件放进 ``_internal/``，onefile 放进 ``%TEMP%\\_MEIxxxx``，
+    两者都是 ``sys._MEIPASS``。以前用 ``program_dir()`` 去找 ``assets/icon.ico``，
+    在打包版里必然落空 —— 表现就是「最小化到托盘之后没有图标」。
+    """
+    if getattr(sys, "frozen", False):
+        bundle = getattr(sys, "_MEIPASS", None)
+        if bundle:
+            return Path(bundle)
+    return program_dir()
 
 
 def _writable(path: Path) -> bool:

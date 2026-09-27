@@ -90,9 +90,15 @@ class Application(QObject):
         self.qt_app.setApplicationVersion(paths.APP_VERSION)
         self.qt_app.setQuitOnLastWindowClosed(True)
 
-        icon_path = paths.program_dir() / "assets" / "icon.ico"
+        # 图标要走 resource_dir()：打包之后 assets/ 在 _internal/（onedir）
+        # 或 %TEMP%\_MEIxxxx（onefile）里，按 exe 目录找会找不到
+        icon_path = paths.resource_dir() / "assets" / "icon.ico"
         if icon_path.exists():
             self.qt_app.setWindowIcon(QIcon(str(icon_path)))
+        else:
+            # 这条以前是静默的：打包版里路径不对时，界面照常起来，
+            # 只是托盘与任务栏都没图标，事后很难查
+            logger.warning("找不到程序图标，托盘/任务栏会没有图标：%s", icon_path)
 
         # ── 业务对象 ────────────────────────────────────────
         self.library = Library()
@@ -219,6 +225,13 @@ class Application(QObject):
     # ── 启动 ────────────────────────────────────────────────
 
     def run(self) -> int:
+        # 打包版排查问题时的第一手信息：资源住在 _internal / _MEIxxxx 里，
+        # 数据住在 exe 旁边或 %LOCALAPPDATA%，这两者不是一回事
+        logger.info(
+            "目录：程序=%s 资源=%s 数据=%s",
+            paths.program_dir(), paths.resource_dir(), paths.data_dir(),
+        )
+
         main_qml = paths.qml_dir() / "Main.qml"
         if not main_qml.exists():
             logger.error("找不到界面文件: %s", main_qml)
