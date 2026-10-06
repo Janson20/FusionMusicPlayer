@@ -11,9 +11,15 @@ import "../ArtistNames.js" as ArtistNames
 
     「全部」标签页顶部按网易云的样式置顶一张歌手卡片和一张歌单卡片
     （``search.topArtist`` / ``search.topPlaylist``），点了直接进歌手页 / 歌单页。
+
+    搜索框下方挂**联想词**（``search.suggestions``）：数据来自网易云的
+    「猜你想搜」（``netease.search_suggest``），前几条可能是本地历史命中
+    （打第一个字就有东西可点，且不联网）。上下键选、回车搜、Esc 收，
+    鼠标移上去也会跟着高亮。
 */
 Item {
     id: control
+    objectName: "searchPage"
 
     readonly property var tabs: search.sourceTabs
     readonly property bool showTops: search.currentSource === "all"
@@ -22,6 +28,56 @@ Item {
         && search.topArtist.id !== ""
     readonly property bool hasPlaylistCard: search.topPlaylist.id !== undefined
         && search.topPlaylist.id !== ""
+
+    // ── 联想状态 ────────────────────────────────────────────
+    //: 当前高亮的联想项（-1 = 没选中，回车搜输入框里的原文）
+    property int suggestIndex: -1
+    //: 用户主动收起过（Esc / 已经搜过了），输入框再有变化才会重新弹
+    property bool suggestDismissed: false
+
+    readonly property var suggestItems: search.suggestions
+    readonly property bool suggestVisible: searchBox.activeFocus && !control.suggestDismissed
+        && searchBox.text.trim() !== "" && control.suggestItems.length > 0
+        && !search.loading
+
+    function suggestKeyword(index) {
+        var items = control.suggestItems
+        if (index < 0 || index >= items.length)
+            return ""
+        return String(items[index].keyword)
+    }
+
+    //: 上下键移动高亮（到边界停住，不循环 —— 循环会让人不知道自己在第几条）
+    function moveSuggest(delta) {
+        if (!control.suggestVisible)
+            return
+        var count = control.suggestItems.length
+        var next = control.suggestIndex + delta
+        if (control.suggestIndex < 0)
+            next = delta > 0 ? 0 : count - 1
+        control.suggestIndex = Math.max(0, Math.min(count - 1, next))
+    }
+
+    //: 回车 / 点「搜索」：选中了联想词就搜它，否则搜输入框里的原文
+    function submitSearch() {
+        var word = control.suggestKeyword(control.suggestIndex)
+        if (word === "")
+            word = searchBox.text.trim()
+        if (word === "")
+            return
+        control.applyKeyword(word)
+    }
+
+    function applyKeyword(word) {
+        control.suggestDismissed = true
+        control.suggestIndex = -1
+        searchBox.text = word          // 程序改 text 不触发 textEdited，联想不会自己弹回来
+        search.search(word)
+    }
+
+    function doSearch() {
+        control.submitSearch()
+    }
 
     ColumnLayout {
         anchors.fill: parent
@@ -35,14 +91,43 @@ Item {
 
             FluTextBox {
                 id: searchBox
+                objectName: "searchInput"
                 Layout.fillWidth: true
                 Layout.maximumWidth: 560
                 placeholderText: "搜索歌曲、歌手、专辑（网易云 / QQ / 酷我 / 酷狗 / 咪咕）"
                 iconSource: FluentIcons.Search
                 cleanEnabled: true
 
-                Keys.onReturnPressed: control.doSearch()
-                onCommit: control.doSearch()
+                // 打字 → 问联想（防抖与去重都在 Python 侧）
+                onTextEdited: {
+                    control.suggestDismissed = false
+                    control.suggestIndex = -1
+                    search.suggest(text)
+                }
+                onActiveFocusChanged: {
+                    if (activeFocus && !control.suggestDismissed && text.trim() !== "")
+                        search.suggest(text)     // 重新聚焦时把上次的联想捞回来
+                }
+
+                Keys.onDownPressed: function (event) {
+                    control.moveSuggest(1)
+                    event.accepted = true
+                }
+                Keys.onUpPressed: function (event) {
+                    control.moveSuggest(-1)
+                    event.accepted = true
+                }
+                Keys.onEscapePressed: function (event) {
+                    control.suggestDismissed = true
+                    control.suggestIndex = -1
+                    search.clearSuggestions()
+                    event.accepted = true
+                }
+                Keys.onReturnPressed: function (event) {
+                    control.submitSearch()
+                    event.accepted = true
+                }
+                onCommit: control.submitSearch()
             }
 
             FluFilledButton {
@@ -97,10 +182,7 @@ Item {
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            searchBox.text = modelData
-                            control.doSearch()
-                        }
+                        onClicked: control.applyKeyword(modelData)
                     }
                 }
             }
@@ -386,10 +468,80 @@ Item {
         }
     }
 
-    function doSearch() {
-        var kw = searchBox.text.trim()
-        if (kw === "")
-            return
-        search.search(kw)
+    /*!
+        联想下拉：贴在搜索框下方**浮一层**（不参与 ColumnLayout，否则每敲一个字
+        下面的结果列表都会跳一下）。数据来自 ``search.suggestions``，服务端过滤，
+        所以不用 FluentUI 自带的 ``FluAutoSuggestBox`` —— 那个是按 ``title``
+        在本地做子串过滤的，也带不了上下键选择。
+    */
+    Rectangle {
+        id: suggestPanel
+        objectName: "searchSuggestPanel"
+        z: 50
+        visible: control.suggestVisible
+        x: searchBox.mapToItem(control, 0, 0).x
+        y: searchBox.mapToItem(control, 0, searchBox.height).y + 6
+        width: searchBox.width
+        height: Math.min(suggestList.contentHeight + 8, 300)
+        radius: Theme.radius
+        color: Theme.dark ? "#232230" : "#FFFFFF"
+        border.width: 1
+        border.color: Theme.border
+        clip: true
+
+        ListView {
+            id: suggestList
+            objectName: "searchSuggestList"
+            anchors.fill: parent
+            anchors.margins: 4
+            model: control.suggestItems
+            boundsBehavior: Flickable.StopAtBounds
+            clip: true
+            ScrollBar.vertical: FluScrollBar { }
+
+            delegate: Rectangle {
+                required property var modelData
+                required property int index
+
+                width: suggestList.width
+                height: 32
+                radius: Theme.radiusSmall
+                color: index === control.suggestIndex ? Theme.accentSoft : "transparent"
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 8
+                    anchors.rightMargin: 10
+                    spacing: 8
+
+                    FluIcon {
+                        Layout.alignment: Qt.AlignVCenter
+                        // 本地历史命中给时钟，接口联想词给放大镜
+                        iconSource: String(modelData.from) === "history"
+                            ? FluentIcons.History : FluentIcons.Search
+                        iconSize: 12
+                        iconColor: index === control.suggestIndex
+                            ? Theme.accent : Theme.textTertiary
+                    }
+                    FluText {
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignVCenter
+                        text: String(modelData.keyword)
+                        font.pixelSize: 12
+                        color: index === control.suggestIndex ? Theme.accent : Theme.textPrimary
+                        elide: Text.ElideRight
+                    }
+                }
+
+                MouseArea {
+                    objectName: "searchSuggestItem"
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onEntered: control.suggestIndex = index
+                    onClicked: control.applyKeyword(String(modelData.keyword))
+                }
+            }
+        }
     }
 }

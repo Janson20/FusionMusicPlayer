@@ -17,7 +17,7 @@ import random
 import threading
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .base import MusicInfo, duration_matches
 from .wy import NetEaseMusicSource
@@ -636,6 +636,65 @@ def _roam_from_daily(src, size: int) -> List[Tuple[MusicInfo, str]]:
 def _roam_from_new_songs(src, size: int) -> List[Tuple[MusicInfo, str]]:
     songs = _safe(lambda: new_songs(max(size, 10)), []) or []
     return [(mi, "新歌推荐") for mi in songs[:size]]
+
+# ──────────────────────────────────────────────────────────────
+# 搜索联想
+# ──────────────────────────────────────────────────────────────
+
+#: 联想词最多返回几条（接口自己给 6 条左右，这里只是兜住极端情况）
+SUGGEST_LIMIT = 8
+
+def parse_suggestions(payload: Any, limit: int = SUGGEST_LIMIT) -> List[str]:
+    """从联想接口的响应里取出关键词列表（纯函数，方便离线回归）。
+
+    结构：``{"code": 200, "result": {"allMatch": [{"keyword": "周杰伦", ...}, …]}}``。
+    去重、去空白、按接口给的顺序截断 —— **顺序就是网易云的排序**，不要重排。
+    """
+    if not isinstance(payload, dict):
+        return []
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        return []
+    out: List[str] = []
+    seen = set()
+    for item in result.get("allMatch") or []:
+        if not isinstance(item, dict):
+            continue
+        keyword = str(item.get("keyword") or "").strip()
+        if not keyword or keyword in seen:
+            continue
+        seen.add(keyword)
+        out.append(keyword)
+        if len(out) >= max(1, int(limit)):
+            break
+    return out
+
+def search_suggest(keyword: str, limit: int = SUGGEST_LIMIT) -> List[str]:
+    """搜索联想词（网易云的「猜你想搜」）。
+
+    实测（2026-10）：``/api/search/suggest/keyword`` 走 eapi 通道，
+    ``周杰`` → 周杰伦 / 周杰伦歌单 / 周杰伦告白气球 … 六条，而且是**纯关键词**，
+    正好对上搜索框的联想需求（另一个 ``/api/search/suggest/web`` 给的是
+    歌曲 / 歌手 / 专辑 / 歌单实体，界面上要另做排版，这里不用）。
+
+    失败一律返回空列表：联想接口不通不该弹错误，输入框照样能用。
+    """
+    keyword = str(keyword or "").strip()
+    if not keyword:
+        return []
+    src = _wy()
+    if src is None:
+        return []
+    try:
+        resp = src._eapi_post(  # noqa: SLF001 - 复用已实现的加密通道
+            "/api/search/suggest/keyword", {"s": keyword}
+        )
+    except Exception as e:
+        logger.debug("搜索联想失败 [%s]: %s", keyword, e)
+        return []
+    if not isinstance(resp, dict) or resp.get("code") != 200:
+        return []
+    return parse_suggestions(resp, limit=limit)
 
 # ──────────────────────────────────────────────────────────────
 # 歌手页 / 搜索结果置顶

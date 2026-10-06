@@ -6,7 +6,7 @@ import logging
 import threading
 from typing import Dict, List
 
-from PySide6.QtCore import QObject, Property, Signal, Slot
+from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
 
 from ..core.models import Track, TrackListModel
 from ..sources import SOURCE_META, SOURCE_NAMES, search_all
@@ -31,13 +31,21 @@ class SearchController(QObject):
     topsChanged = Signal()
 
     MAX_HISTORY = 24
+    #: 联想最多显示几条（含本地历史命中的那几条）
+    SUGGEST_LIMIT = 8
+    #: 本地历史最多贡献几条 —— 联想词是主角，历史只是"打第一个字就有东西可点"
+    SUGGEST_HISTORY_LIMIT = 3
+    #: 输入停下多久才去问接口。打字过程中每个字符发一次请求，既慢又容易被限流
+    SUGGEST_DEBOUNCE_MS = 260
+    #: 联想结果的小缓存条数（退格、改一个字时不用重新请求）
+    SUGGEST_CACHE_LIMIT = 64
 
     def __init__(self, config, parent=None):
         super().__init__(parent)
         self._config = config
         self._emitter = _Emitter(self)
         self._emitter.done.connect(self._on_done)
-        self._emitter.suggestions.connect(self._on_suggestions)
+        self._emitter.suggestions.connect(self._on_remote_suggestions)
         self._emitter.tops.connect(self._on_tops)
 
         self._model = TrackListModel()
@@ -50,10 +58,20 @@ class SearchController(QObject):
         self._by_source: Dict[str, List[Track]] = {}
         self._totals: Dict[str, int] = {}
         self._history: List[str] = list(config.get("search_history", []) or [])
-        self._suggestions: List[str] = []
+        self._suggestions: List[Dict[str, str]] = []
+        self._suggest_query = ""
+        self._suggest_remote: List[str] = []
+        self._suggest_cache: Dict[str, List[str]] = {}
+        self._suggest_seq = 0
         self._has_more = False
         self._top_artist: Dict = {}
         self._top_playlist: Dict = {}
+
+        # 防抖：输入框每敲一下都会调 suggest()，只有停下来才真的发请求
+        self._suggest_timer = QTimer(self)
+        self._suggest_timer.setSingleShot(True)
+        self._suggest_timer.setInterval(self.SUGGEST_DEBOUNCE_MS)
+        self._suggest_timer.timeout.connect(self._request_suggestions)
 
     # ── 属性 ────────────────────────────────────────────────
 
@@ -95,7 +113,11 @@ class SearchController(QObject):
 
     @Property("QVariantList", notify=suggestionsChanged)
     def suggestions(self):  # noqa: N802
-        return list(self._suggestions)
+        """搜索联想列表：``[{keyword, from}]``，``from`` 是 ``history`` / ``suggest``。
+
+        界面靠 ``from`` 决定行首的小图标（时钟 / 放大镜），也便于将来分开排版。
+        """
+        return [dict(item) for item in self._suggestions]
 
     @Property("QVariant", notify=topsChanged)
     def topArtist(self):  # noqa: N802
@@ -130,6 +152,9 @@ class SearchController(QObject):
         if not keyword:
             self.errorOccurred.emit("请输入搜索关键词")
             return
+        # 真发起搜索了就把联想收掉：防抖计时器停掉、在飞的请求作废，
+        # 否则结果都出来了联想框还在下面杵着
+        self.clearSuggestions()
         self._keyword = keyword
         self._page = 1
         self._push_history(keyword)
@@ -163,6 +188,7 @@ class SearchController(QObject):
     @Slot()
     def clear(self) -> None:
         self._seq += 1
+        self.clearSuggestions()
         self._keyword = ""
         self._page = 1
         self._by_source.clear()
@@ -308,22 +334,103 @@ class SearchController(QObject):
         else:
             self._model.set_tracks(self._by_source.get(self._current_source, []))
 
-    # ── 搜索建议（来自本地历史 + 热搜） ─────────────────────
+    # ── 搜索联想（网易云「猜你想搜」+ 本地历史）─────────────
 
     @Slot(str)
     def suggest(self, text: str) -> None:
-        text = (text or "").strip().lower()
-        if not text:
-            self._suggestions = []
-            self.suggestionsChanged.emit()
-            return
-        hits = [h for h in self._history if text in h.lower()][:8]
-        self._suggestions = hits
-        self.suggestionsChanged.emit()
+        """输入变化时调用：先给本地历史的即时命中，再防抖去问网易云。
 
-    @Slot(object)
-    def _on_suggestions(self, items) -> None:
-        self._suggestions = list(items or [])
+        UI 在 ``onTextEdited`` 里调它（程序改 ``text`` 不会触发，所以点联想词
+        回填不会自己再弹一次）。
+        """
+        query = (text or "").strip()
+        self._suggest_query = query
+        self._suggest_timer.stop()
+        if not query:
+            self._suggest_remote = []
+            self._publish_suggestions()
+            return
+
+        cached = self._suggest_cache.get(query)
+        if cached is not None:
+            self._suggest_remote = list(cached)
+            self._publish_suggestions()
+            return
+
+        # 历史命中的先顶上（本地、不联网，打第一个字就有东西可点）
+        self._suggest_remote = []
+        self._publish_suggestions()
+        self._suggest_timer.start()
+
+    @Slot()
+    def clearSuggestions(self) -> None:  # noqa: N802
+        """收起联想（搜索发起、按 Esc、点空白处都走这里）。"""
+        self._suggest_timer.stop()
+        self._suggest_seq += 1        # 让在飞的请求作废
+        self._suggest_query = ""
+        self._suggest_remote = []
+        self._publish_suggestions()
+
+    def _request_suggestions(self) -> None:
+        query = self._suggest_query
+        if not query:
+            return
+        self._suggest_seq += 1
+        seq = self._suggest_seq
+        threading.Thread(
+            target=self._suggest_worker, args=(seq, query), daemon=True, name="search-suggest"
+        ).start()
+
+    def _suggest_worker(self, seq: int, query: str) -> None:
+        try:
+            items = netease.search_suggest(query, limit=self.SUGGEST_LIMIT)
+        except Exception as e:  # pragma: no cover - netease 内部已吞异常，这里兜底
+            logger.debug("搜索联想失败: %s", e)
+            items = []
+        self._emitter.suggestions.emit(seq, {"query": query, "items": items})
+
+    @Slot(int, object)
+    def _on_remote_suggestions(self, seq: int, payload) -> None:
+        if seq != self._suggest_seq or not isinstance(payload, dict):
+            return
+        query = str(payload.get("query") or "")
+        if query != self._suggest_query:
+            return                     # 用户又敲了别的字，这份结果已经过期
+        items = [str(x) for x in (payload.get("items") or [])]
+        self._remember_suggestions(query, items)
+        self._suggest_remote = items
+        self._publish_suggestions()
+
+    def _remember_suggestions(self, query: str, items: List[str]) -> None:
+        """记住这一条查询的联想结果（有上限，退格回去不用重问）。"""
+        try:
+            self._suggest_cache[query] = list(items)
+            while len(self._suggest_cache) > self.SUGGEST_CACHE_LIMIT:
+                self._suggest_cache.pop(next(iter(self._suggest_cache)))
+        except Exception as e:  # pragma: no cover - 缓存坏了不该影响联想
+            logger.debug("缓存联想结果失败: %s", e)
+
+    def _publish_suggestions(self) -> None:
+        """把「本地历史命中 + 接口联想词」合成一份给界面（历史在前，去重）。"""
+        query = self._suggest_query.lower()
+        merged: List[Dict[str, str]] = []
+        seen = set()
+        if query:
+            for item in self._history:
+                if len(merged) >= self.SUGGEST_HISTORY_LIMIT:
+                    break
+                if query in item.lower() and item not in seen:
+                    seen.add(item)
+                    merged.append({"keyword": item, "from": "history"})
+        for item in self._suggest_remote:
+            if len(merged) >= self.SUGGEST_LIMIT:
+                break
+            if item and item not in seen:
+                seen.add(item)
+                merged.append({"keyword": item, "from": "suggest"})
+        if merged == self._suggestions:
+            return
+        self._suggestions = merged
         self.suggestionsChanged.emit()
 
     @Slot(str, int, result="QVariant")

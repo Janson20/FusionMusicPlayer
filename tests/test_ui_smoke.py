@@ -32,6 +32,8 @@
     弹不出来、另存为的默认名字不对、扩展名不按文件头纠正、失败时静默。
 13. 音频缓存（``core/cache.py``）：按**播放地址**当键导致同一首歌存好几份
     （地址里嵌着时间戳），以及设置里那个「清理重复文件」按钮点了没反应。
+14. 搜索联想（``pages/SearchPage.qml`` + ``bridges/search.py``）：下拉浮不出来、
+    上下键选不动、回车搜的是输入框里的半截词而不是选中的联想词。
 
 无显示环境（CI）下需要一个虚拟屏幕::
 
@@ -134,6 +136,9 @@ class UiProbe(Application):
 
         QTimer.singleShot(1200, lambda: self.guard(self.step_startup))
         self.exit_code = self.qt_app.exec()
+        # 与 Application.run 一样先拆引擎：不拆的话解释器退出时析构顺序不定，
+        # 实测会以访问违例收场，把「测试是否通过」的退出码搅乱
+        self._release_engine()
         return self.exit_code
 
     # ── 工具 ────────────────────────────────────────────────
@@ -1075,12 +1080,72 @@ class UiProbe(Application):
 
         self.guard(self.step_equalize)
         self.guard(self.step_cache_dedupe)
+        self.guard(self.step_search_suggest)
         self.guard(self.step_updater)
         self.guard(self.step_many_artists)
 
         self.guard(self.step_tray)
 
         self.guard(self.step_signal_params)
+
+    # ── 搜索联想 ────────────────────────────────────────────
+    def step_search_suggest(self):
+        """搜索联想：下拉浮得出来、上下键能选、回车搜的是**选中的那一条**。
+
+        数据在 Python 侧直接注入（真接口要联网，冒烟测试不联网），验的是
+        「服务端结果 → 下拉渲染 → 键盘选择 → 真的发起搜索」这条链。
+        """
+        self.eval_js("app.go('search')")
+        self.pump(700)
+
+        page = self.window.findChild(QObject, "searchPage")
+        box = self.window.findChild(QObject, "searchInput")
+        panel = self.window.findChild(QObject, "searchSuggestPanel")
+        check("搜索页 / 输入框 / 联想下拉都在", None not in (page, box, panel))
+        if None in (page, box, panel):
+            return
+        check("没输入时不弹联想", not panel.isVisible())
+
+        self.click_item(box)          # 聚焦：联想只在输入框有焦点时弹
+        box.setProperty("text", "周杰")
+        self.search._suggest_query = "周杰"
+        self.search._suggest_remote = ["周杰伦", "周杰伦歌单", "周杰伦告白气球"]
+        self.search._publish_suggestions()
+        self.pump(500)
+
+        check("输入后弹出联想下拉", panel.isVisible(), f"visible={panel.isVisible()}")
+        rows = [r for r in self.find_items("searchSuggestItem") if r.isVisible()]
+        check("联想词按条渲染", len(rows) == 3, f"{len(rows)} 行")
+
+        # 上下键：先按 ↓ 落到第一条，再按一次到第二条
+        check("初始没有高亮项", int(page.property("suggestIndex")) == -1,
+              f"{page.property('suggestIndex')}")
+        QTest.keyClick(self.window, Qt.Key.Key_Down)
+        self.pump(250)
+        check("↓ 高亮第一条", int(page.property("suggestIndex")) == 0,
+              f"{page.property('suggestIndex')}")
+        QTest.keyClick(self.window, Qt.Key.Key_Down)
+        self.pump(250)
+        check("再按 ↓ 高亮第二条", int(page.property("suggestIndex")) == 1,
+              f"{page.property('suggestIndex')}")
+
+        # 回车：搜的应当是选中的那条联想词，而不是输入框里的半截
+        QTest.keyClick(self.window, Qt.Key.Key_Return)
+        self.pump(700)
+        check("回车搜的是选中的联想词",
+              self.search.keyword == "周杰伦歌单", f"{self.search.keyword!r}")
+        check("发起搜索后联想收起", not panel.isVisible())
+
+        # Esc 收起后再输入才会弹回来
+        box.setProperty("text", "周杰")
+        self.search._publish_suggestions()
+        self.pump(300)
+        QTest.keyClick(self.window, Qt.Key.Key_Escape)
+        self.pump(300)
+        check("Esc 收起联想", not panel.isVisible())
+
+        self.eval_js("app.go('discover')")
+        self.pump(300)
 
     # ── 音频缓存去重 ────────────────────────────────────────
     def step_cache_dedupe(self):

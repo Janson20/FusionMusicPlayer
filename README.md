@@ -98,6 +98,21 @@ set FUSION_MUSIC_HOME=D:\Music\FusionData && python main.py
   设置是上限，不是承诺
 * B 站音源默认仅参与兜底（其构造需要联网抓取 buvid，已改为惰性加载）
 
+### 搜索联想
+* 搜索框下方浮一层联想词，数据来自网易云的**「猜你想搜」**
+  （`/api/search/suggest/keyword`，eapi 通道）。实测：`周杰` →
+  周杰伦 / 周杰伦歌单 / 周杰伦告白气球 …，**顺序就是网易云自己的排序**，不重排
+* 前几条可能是**本地历史命中**（行首是时钟图标，接口词是放大镜）：打第一个字
+  就有东西可点，断网时联想框也不是空的
+* 交互：↑↓ 选（到边界停住、不循环）、回车搜**选中的那一条**、Esc 收起、
+  鼠标移上去跟着高亮、点一下直接搜。右键菜单 / 清空按钮等原生行为不变
+* 打字**防抖 260 ms** 才发请求，并且按关键词缓存最近 64 条结果 ——
+  边打边删不会把接口打爆（网易云这类接口对频率敏感）
+* 过期的响应直接丢掉：用递增序号 + 关键词双重校验，慢的那次回来时不会把
+  新关键词的联想盖掉
+* 为什么不用 FluentUI 自带的 `FluAutoSuggestBox`：它是拿 `title` 在**本地做子串
+  过滤**的（服务端联想的词未必包含你打的字），而且没有键盘选择
+
 ### 漫游
 * 一条**持续生成的个性化推荐流**：登录后走网易云私人 FM（`/api/v1/radio/get`），
   每次 3 首、连打就是取之不尽的流；未登录或接口降级时退到每日推荐、推荐新音乐
@@ -324,6 +339,11 @@ set FUSION_MUSIC_HOME=D:\Music\FusionData && python main.py
 * 系统没有通知区域（部分 Linux 桌面、离屏环境）时**自动降级**：设置里的托盘开关
   灰掉，「最小化到托盘」一律按「直接退出」处理 —— 没有托盘还把窗口藏起来的话，
   用户就再也找不回这个程序了（这条判断是纯函数 `close_decision()`，有离线回归）
+* 退出时**先把 QML 引擎拆掉**再让 `QGuiApplication` 走
+  （`Application._release_engine`）：两者都是 Python 持有的对象，不显式排序的话
+  解释器退出时会以任意顺序析构，实测（Qt 6.11 / Windows）引擎晚一步销毁就访问违例
+  （退出码 `-1073741819`），用户看到的是「关程序时弹一句 python has stopped
+  working」—— 程序明明是自己退的，看着却像崩了
 * 退出走的是 `QGuiApplication.exit(0)`，**不是 QML 的 `Qt.quit()`**：托盘图标只要
   露过面，`Qt.quit()`（= `QCoreApplication::quit()`）就会被吞掉 —— Qt 有意让
   「有托盘的程序」不因窗口关闭而退出（托盘的意义就是窗口关了程序还在），而
@@ -448,7 +468,7 @@ QML 编译缓存（`*.qmlc`）Qt 6 **默认就开着**，不需要额外配置
 
 ```bash
 python main.py                       # 运行
-python tests/test_core.py            # 核心逻辑回归（离线，101 项）
+python tests/test_core.py            # 核心逻辑回归（离线，102 项）
 python tests/test_startup.py         # 启动链回归（离线：启动画面资源 / 延迟导入 / 计时）
 python tests/test_ui_smoke.py        # QML 界面冒烟（需要显示环境）
 python tools/check_qml_signals.py    # QML 信号处理器静态检查
@@ -829,7 +849,7 @@ FusionMusicPlayer/
 │   │   └── account.py           网易云登录、凭据持久化与续期
 │   ├── bridges/                 QML ↔ Python 控制器
 │   │   ├── app.py               导航 / 通知 / 窗口状态 / 封面保存
-│   │   ├── search.py            多音源搜索（含搜索置顶的歌手 / 歌单卡片）
+│   │   ├── search.py            多音源搜索（含搜索置顶卡片、搜索联想）
 │   │   ├── library.py           歌单 / 收藏 / 本地扫描与在线匹配
 │   │   ├── discover.py          推荐 / 排行榜 / 歌单详情
 │   │   ├── detail.py            详情页基类（歌手页 / 专辑页共用）

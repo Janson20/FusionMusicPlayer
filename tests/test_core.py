@@ -2395,6 +2395,42 @@ def test_lyrics_to_dicts_marks_dynamic():
 
 
 # ──────────────────────────────────────────────────────────────
+# 搜索联想
+# ──────────────────────────────────────────────────────────────
+
+#: 网易云 /api/search/suggest/keyword 的真实响应片段（2026-10，「周杰」）
+SUGGEST_PAYLOAD = {
+    "code": 200,
+    "result": {
+        "allMatch": [
+            {"keyword": "周杰伦", "type": 1, "alg": "alg_suggest_other_Artist", "lastKeyword": ""},
+            {"keyword": "周杰伦歌单", "type": 1, "alg": "alg_suggest_other_Consume", "lastKeyword": ""},
+            {"keyword": "周杰伦告白气球", "type": 1, "alg": "alg_suggest_other_Consume"},
+            {"keyword": "周杰伦", "type": 1},          # 重复项要去掉
+            {"keyword": "  ", "type": 1},              # 空白的要去掉
+            {"notKeyword": "x"},                       # 结构不对的跳过
+            "字符串项也要跳过",
+        ]
+    },
+}
+
+
+def test_parse_search_suggestions():
+    """联想词解析：顺序照接口给（那是网易云的排序）、去重、去空白、按上限截断。"""
+    from app.sources.netease import parse_suggestions
+
+    assert parse_suggestions(SUGGEST_PAYLOAD) == [
+        "周杰伦", "周杰伦歌单", "周杰伦告白气球",
+    ]
+    assert parse_suggestions(SUGGEST_PAYLOAD, limit=2) == ["周杰伦", "周杰伦歌单"]
+    # 各种残缺响应都不能炸
+    for junk in (None, {}, {"result": None}, {"result": {"allMatch": None}},
+                 {"result": {"allMatch": "不是列表"}}, [], "字符串"):
+        assert parse_suggestions(junk) == [], junk
+    assert parse_suggestions(SUGGEST_PAYLOAD, limit=0) == ["周杰伦"]   # 上限至少 1 条
+
+
+# ──────────────────────────────────────────────────────────────
 # 音频缓存（键与去重）
 # ──────────────────────────────────────────────────────────────
 
