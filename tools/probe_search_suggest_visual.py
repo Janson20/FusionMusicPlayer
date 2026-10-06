@@ -84,6 +84,21 @@ class Visual(Application):
         for item in self.search.suggestions:
             print(f"   [{item.get('from')}] {item.get('keyword')}", flush=True)
 
+        # 几何：下拉必须**完全**落在搜索框下沿之下（曾经盖住搜索框下半截），
+        # 而且必须真的可见（挂在搜索框身上之后，层级不对就会被结果卡片盖住）
+        panel = self.window.findChild(QObject, "searchSuggestPanel")
+        if panel is not None:
+            from PySide6.QtCore import QPointF
+
+            box_bottom = box.mapToItem(None, QPointF(0, 0)).y() + float(box.property("height"))
+            panel_top = panel.mapToItem(None, QPointF(0, 0)).y()
+            print(f"[probe] 搜索框下沿 y={box_bottom:.0f}，下拉上沿 y={panel_top:.0f}，"
+                  f"间隙 {panel_top - box_bottom:.0f}px", flush=True)
+            print(f"[probe] 下拉宽度 {panel.property('width'):.0f} / "
+                  f"搜索框宽度 {box.property('width'):.0f}", flush=True)
+            print(f"[probe] 下拉可见={panel.isVisible()}，"
+                  f"高度={panel.property('height'):.0f}", flush=True)
+
         image = self.window.grabWindow()
         image.save(str(self.out))
         step(f"截图：{self.out.resolve()}")

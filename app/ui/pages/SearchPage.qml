@@ -85,7 +85,11 @@ Item {
         spacing: 14
 
         // ── 搜索框 ──────────────────────────────────────────
+        // z 要高过下面的结果卡片：联想下拉挂在这一行里的搜索框身上（见文件末尾），
+        // 不抬高层级的话它会被稍后声明的卡片盖住 —— 位置对了却看不见
         RowLayout {
+            id: searchRow
+            z: 50
             Layout.fillWidth: true
             spacing: 10
 
@@ -469,19 +473,27 @@ Item {
     }
 
     /*!
-        联想下拉：贴在搜索框下方**浮一层**（不参与 ColumnLayout，否则每敲一个字
-        下面的结果列表都会跳一下）。数据来自 ``search.suggestions``，服务端过滤，
-        所以不用 FluentUI 自带的 ``FluAutoSuggestBox`` —— 那个是按 ``title``
-        在本地做子串过滤的，也带不了上下键选择。
+        联想下拉：**挂在搜索框自己身上**（``parent: searchBox``），用锚点贴着它下沿
+
+        不用 ``y: searchBox.mapToItem(control, 0, searchBox.height).y + 6`` 这种手算
+        坐标：``mapToItem()`` 只是普通函数调用，在绑定里**建立不了依赖** —— 页面进场
+        动画途中算出来的那一次偏移会被一直用下去，于是下拉盖住搜索框下半截（实测就是
+        这么翻车的）。挂成子项之后，搜索框被布局挪到哪儿、下沿在哪儿，下拉就跟到哪儿。
+
+        数据来自 ``search.suggestions``，服务端过滤，所以不用 FluentUI 自带的
+        ``FluAutoSuggestBox`` —— 那个是按 ``title`` 在本地做子串过滤的，
+        也带不了上下键选择。
     */
     Rectangle {
         id: suggestPanel
         objectName: "searchSuggestPanel"
+        parent: searchBox
+        anchors.top: parent.bottom
+        anchors.topMargin: 6
+        anchors.left: parent.left
+        width: parent.width
         z: 50
         visible: control.suggestVisible
-        x: searchBox.mapToItem(control, 0, 0).x
-        y: searchBox.mapToItem(control, 0, searchBox.height).y + 6
-        width: searchBox.width
         height: Math.min(suggestList.contentHeight + 8, 300)
         radius: Theme.radius
         color: Theme.dark ? "#232230" : "#FFFFFF"

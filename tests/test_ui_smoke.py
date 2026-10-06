@@ -1114,6 +1114,12 @@ class UiProbe(Application):
         self.pump(500)
 
         check("输入后弹出联想下拉", panel.isVisible(), f"visible={panel.isVisible()}")
+        # 下拉必须**完全**落在搜索框下沿之下：曾经用 mapToItem 手算坐标
+        # （函数调用在绑定里建立不了依赖），算出来的偏移一旦过期就把搜索框盖掉半截
+        box_bottom = self.to_point(box, 0, box.property("height")).y()
+        panel_top = self.to_point(panel, 0, 0).y()
+        check("联想下拉没有盖住搜索框", panel_top >= box_bottom,
+              f"搜索框下沿 y={box_bottom} / 下拉上沿 y={panel_top}")
         rows = [r for r in self.find_items("searchSuggestItem") if r.isVisible()]
         check("联想词按条渲染", len(rows) == 3, f"{len(rows)} 行")
 
