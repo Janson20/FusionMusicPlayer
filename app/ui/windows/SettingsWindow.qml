@@ -968,6 +968,14 @@ FluWindow {
                         checked: settings.showRomaji
                         onToggled: function (value) { settings.setBool("lyrics.show_romaji", value) }
                     }
+                    SettingSwitch {
+                        objectName: "lyricDynamicSwitch"
+                        label: "逐字（动态）歌词"
+                        description: "唱到哪个字就点亮哪个字；网易云没有提供逐字歌词的"
+                                     + "歌曲按行时间推算（效果略逊，但不再是整行突然亮起）"
+                        checked: settings.lyricDynamic
+                        onToggled: function (value) { settings.setBool("lyrics.dynamic", value) }
+                    }
 
                     SectionHeader { Layout.fillWidth: true; title: "对齐方式" }
                     RowLayout {
@@ -1177,6 +1185,20 @@ FluWindow {
                             text: "立即清理"
                             onClicked: settings.trimCache()
                         }
+                        FluButton {
+                            objectName: "dedupeCacheButton"
+                            text: "清理重复文件"
+                            onClicked: settings.dedupeCache()
+                        }
+                    }
+                    FluText {
+                        Layout.fillWidth: true
+                        text: "「缓存音频文件」开着时，同一首歌曾经会因为播放地址每次都变"
+                              + "而重复存好几份（旧版本的问题，已修复）。这里用来清理"
+                              + "已经堆在盘上的那些重复文件，只比对大小相同的，保留最近用过的一份。"
+                        font.pixelSize: 11
+                        color: Theme.textTertiary
+                        wrapMode: Text.WordWrap
                     }
 
                     SectionHeader { Layout.fillWidth: true; title: "目录" }

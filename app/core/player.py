@@ -76,6 +76,8 @@ class PlayerEngine(QObject):
     favoriteStateChanged = Signal()
     lyricChanged = Signal()
     lyricIndexChanged = Signal()
+    #: 当前行「唱到第几个字」（可带小数，见 Lyrics.char_progress）——逐字填充用
+    lyricProgressChanged = Signal()
     loadingChanged = Signal()
     errorOccurred = Signal(str)
     statusMessage = Signal(str)
@@ -122,6 +124,7 @@ class PlayerEngine(QObject):
 
         self._lyrics = Lyrics()
         self._lyric_index = -1
+        self._lyric_progress = 0.0
         self._lyric_translation = ""
         self._lyric_roma = ""
 
@@ -329,6 +332,15 @@ class PlayerEngine(QObject):
     @Property(int, notify=lyricIndexChanged)
     def lyricIndex(self) -> int:  # noqa: N802
         return self._lyric_index
+
+    @Property(float, notify=lyricProgressChanged)
+    def lyricProgress(self) -> float:  # noqa: N802
+        """当前行「唱到第几个字」——整数部分是已唱完的字数，小数部分是当前字唱了多少。
+
+        界面拿它在「已唱色 / 未唱色」之间插值（见 NowPlayingPanel 的逐字填充）。
+        没有逐字数据的行恒为 0，界面那边据此回落到整行高亮。
+        """
+        return self._lyric_progress
 
     # ── 队列镜像（供 QML 显示）─────────────────────────────
 
@@ -801,6 +813,7 @@ class PlayerEngine(QObject):
         self._seekable = False
         self._lyrics.clear()
         self._lyric_index = -1
+        self._lyric_progress = 0.0
         self._loading = True
         # 命中缓存时立刻就是正确的增益；没有缓存则先按 0 dB 起播，
         # 后台分析出结果后再用斜坡接上（见 _on_loudness_measured）
@@ -811,6 +824,7 @@ class PlayerEngine(QObject):
         self.positionChanged.emit()
         self.lyricChanged.emit()
         self.lyricIndexChanged.emit()
+        self.lyricProgressChanged.emit()
         self.loadingChanged.emit()
         self.seekableChanged.emit()
         self.favoriteChanged.emit()
@@ -893,11 +907,16 @@ class PlayerEngine(QObject):
     def _lyric_worker(self, seq: int, track: Track) -> None:
         try:
             from ..sources import get_lyric
-            from ..sources.netease import fetch_translation
+            from ..sources.netease import fetch_lyric_bundle, fetch_translation
+
+            want_translation = bool(self._config.get("lyrics.show_translation", True))
+            want_roma = bool(self._config.get("lyrics.show_romaji", False))
+            want_word = bool(self._config.get("lyrics.dynamic", True))
 
             raw = ""
             translation = ""
             roma = ""
+            word = ""
             if track.is_local and track.path:
                 # 本地文件优先读同目录的同名 .lrc
                 raw = _read_local_lrc(track.path) or ""
@@ -911,38 +930,83 @@ class PlayerEngine(QObject):
                 source_id = str(track.match_source or "")
                 song_id = str(track.match_songmid or "")
 
+            if source_id == "wy" and song_id:
+                # 网易云：逐行 / 翻译 / 罗马音 / **逐字**一次取回。老代码要跑两次
+                # 请求（get_lyric + fetch_translation），而逐字歌词本来就藏在同一
+                # 个接口里（带上 yv/ytv/yrv 即可，见 fetch_lyric_bundle）。
+                bundle = fetch_lyric_bundle(
+                    song_id,
+                    want_translation=want_translation,
+                    want_roma=want_roma,
+                    want_word=want_word,
+                )
+                if bundle is not None:
+                    if not raw:
+                        raw = bundle.lrc
+                    translation = bundle.translation
+                    roma = bundle.roma
+                    if want_word:
+                        word = bundle.word
+
             if not raw and source_id and song_id:
                 info = track.to_music_info()
                 info.source = source_id
                 info.songmid = song_id
                 raw = get_lyric(info, source_id) or ""
-            if raw and source_id == "wy":
-                translation, roma = fetch_translation(
-                    song_id,
-                    want_translation=bool(self._config.get("lyrics.show_translation", True)),
-                    want_roma=bool(self._config.get("lyrics.show_romaji", False)),
-                )
-            self._emitter.lyricReady.emit(seq, (raw, translation, roma))
+                if raw and source_id == "wy" and not (translation or roma):
+                    # 走到这儿说明 bundle 没成（网络抖动 / 接口变了），翻译只能单独再问
+                    translation, roma = fetch_translation(
+                        song_id, want_translation=want_translation, want_roma=want_roma
+                    )
+            self._emitter.lyricReady.emit(seq, (raw, translation, roma, word))
         except Exception as e:
             logger.debug("获取歌词失败: %s", e)
-            self._emitter.lyricReady.emit(seq, ("", "", ""))
+            self._emitter.lyricReady.emit(seq, ("", "", "", ""))
 
     @Slot(int, object)
     def _on_lyric_ready(self, seq: int, payload: Any) -> None:
         if seq != self._seq:
             return
-        raw, translation, roma = payload if isinstance(payload, tuple) else ("", "", "")
+        raw, translation, roma, word = _lyric_payload(payload)
+        dynamic = bool(self._config.get("lyrics.dynamic", True))
         self._lyrics.clear()
         if raw:
             self._lyrics.parse(raw)
             if self._lyrics.lines:
+                # 顺序要紧：翻译/罗马音按**行时间**配对，而 set_words 会把行时间
+                # 对齐到 yrc 的（更贴近真实起唱点），先贴逐字的话翻译就配不上了
                 if translation:
                     self._lyrics.set_translation(translation)
                 if roma:
                     self._lyrics.set_roma(roma)
+                if dynamic:
+                    if word:
+                        self._lyrics.set_words(word)
+                    # 没有真逐字的行再摊一份伪动态（有些歌只有一两行有 yrc）
+                    self._lyrics.apply_pseudo()
         self._lyric_index = -1
+        self._lyric_progress = 0.0
         self.lyricChanged.emit()
         self.lyricIndexChanged.emit()
+        self.lyricProgressChanged.emit()
+
+    @Slot()
+    def applyLyricSettings(self) -> None:  # noqa: N802
+        """「设置 → 歌词」改了就立刻生效的那部分（目前只有逐字开关）。
+
+        正在播的这首如果只拿到了逐行歌词，开关一打开就先把伪动态补上 ——
+        否则用户点完开关看不见任何变化，会以为功能坏了。**不清除已有的逐字数据**：
+        关掉再打开时真逐字还在，不用重新联网取一遍（真逐字要当前这首本来就有，
+        在设置里打开才生效的那种情况，下一首自然会有）。
+        """
+        if self._lyrics.is_empty:
+            return
+        if bool(self._config.get("lyrics.dynamic", True)):
+            if not any(line.words for line in self._lyrics.lines):
+                if self._lyrics.apply_pseudo():
+                    self.lyricChanged.emit()
+                    self._lyric_progress = self._lyrics.char_progress(self._position_ms)
+                    self.lyricProgressChanged.emit()
 
     # ── 内部：播放器回调 ────────────────────────────────────
 
@@ -1049,6 +1113,13 @@ class PlayerEngine(QObject):
         if idx != self._lyric_index:
             self._lyric_index = idx
             self.lyricIndexChanged.emit()
+        # 逐字填充按位置连续推进：位置每变一次就重算一次。实测
+        # QMediaPlayer.positionChanged 约 93 ms 一次，够界面把"正在唱的那个字"
+        # 画成渐变；暂停时位置不动，填充自然停住。
+        progress = self._lyrics.char_progress(self._position_ms)
+        if abs(progress - self._lyric_progress) > 1e-3:
+            self._lyric_progress = progress
+            self.lyricProgressChanged.emit()
 
     def _poll_progress(self) -> None:
         if self._player.playbackState() == QMediaPlayer.StoppedState and not self._paused:
@@ -1167,6 +1238,19 @@ class PlayerEngine(QObject):
         # 淡入淡出与均衡增益乘过，存下来下次启动就跑了）
         self._config.set("playback.volume", int(self._user_volume))
         self._config.set("playback.muted", self.muted)
+
+
+def _lyric_payload(payload: Any) -> tuple:
+    """把歌词线程投递回来的载荷拆成 ``(逐行, 翻译, 罗马音, 逐字)``。
+
+    载荷是元组；长度不对（旧格式 / 异常）时一律按空处理，不让界面拿到半个字段。
+    """
+    if not isinstance(payload, tuple):
+        return ("", "", "", "")
+    values = list(payload[:4])
+    values += [""] * (4 - len(values))
+    return tuple("" if v is None else v for v in values)
+
 
 def _coerce_track(value: Any) -> Optional[Track]:
     if value is None:

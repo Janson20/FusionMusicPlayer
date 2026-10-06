@@ -27,16 +27,20 @@ DEFAULTS: Dict[str, Any] = {
         # 而且 "gradient" 违反本项目的 UI 规范（不用渐变）—— 现在只留真正生效的两种。
         "background": "solid",
         "background_image": "",     # data/backgrounds/ 下的文件名（不存绝对路径）
-        "background_opacity": 65,   # 0-100：背景图自身的不透明度
-        "background_blur": 25,      # 0-100：磨砂感（模糊）
-        "background_scrim": 35,     # 0-100：蒙版浓度（压暗/提亮，保证文字可读）
+        # 下面这几个默认值是照着「图看清楚、面板别糊住图」调出来的：
+        # 背景图本身给足 85% 不透明度，磨砂只留 10%（糊太狠就白瞎了原图），
+        # 蒙版 30% 保证文字读得清；四个分区都比以前更透，内容区最透（卡片 20%）、
+        # 贴着窗口边的播放栏最实（40%）。
+        "background_opacity": 85,   # 0-100：背景图自身的不透明度
+        "background_blur": 10,      # 0-100：磨砂感（模糊）
+        "background_scrim": 30,     # 0-100：蒙版浓度（压暗/提亮，保证文字可读）
         # 分区不透明度（0-100）。内容区（主体）不设面板色，图直接透出来最清；
         # 侧边栏 / 播放栏 / 覆盖层 / 卡片各自压一层，越「贴边」越实 ——
         # 一眼能看出层次，又不至于把图全挡掉。
-        "surface_sidebar": 68,      # 左侧导航栏
-        "surface_bottom": 74,       # 底部播放栏
-        "surface_overlay": 62,      # 覆盖层页面：歌词页（展开播放）、歌单/专辑/歌手详情
-        "surface_card": 80,         # 内容区里的卡片与列表底
+        "surface_sidebar": 30,      # 左侧导航栏
+        "surface_bottom": 40,       # 底部播放栏
+        "surface_overlay": 35,      # 覆盖层页面：歌词页（展开播放）、歌单/专辑/歌手详情
+        "surface_card": 20,         # 内容区里的卡片与列表底
         "animations": True,
         "nav_expanded": True,
     },
@@ -109,11 +113,15 @@ DEFAULTS: Dict[str, Any] = {
         "cache_media": False,
         "media_cache_limit_mb": 2048,
         "download_dir": "",         # 空 = 程序目录下的 downloads
+        # 「保存封面」的另存为对话框上次用过的目录（空 = 系统图片目录）
+        "cover_dir": "",
     },
     # ── 歌词 / 桌面歌词 ─────────────────────────────────────
     "lyrics": {
         "show_translation": True,
         "show_romaji": False,
+        # 逐字（动态）歌词：有逐字数据就用真的，没有就按行时间摊出伪动态
+        "dynamic": True,
         "font_size": 17,
         "alignment": "center",      # left | center | right
         "desktop_lyric": False,

@@ -16,6 +16,7 @@ import logging
 import random
 import threading
 import time
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from .base import MusicInfo, duration_matches
@@ -319,32 +320,71 @@ def refresh_login() -> str:
     return after or before
 
 # ──────────────────────────────────────────────────────────────
-# 歌词翻译 / 罗马音
+# 歌词（逐行 + 翻译 + 罗马音 + 逐字）
 # ──────────────────────────────────────────────────────────────
 
-def fetch_translation(
-    song_id: str, *, want_translation: bool = True, want_roma: bool = False
-) -> Tuple[str, str]:
-    """获取翻译歌词与罗马音歌词。
 
-    FMCL 的 ``get_lyric`` 其实请求了 ``tv``/``rv`` 却只读 ``lrc.lyric``，
-    翻译与罗马音形同虚设；这里真正接上。
+@dataclass(frozen=True)
+class LyricBundle:
+    """一次 ``/api/song/lyric`` 取回来的全部歌词数据。
+
+    ``word`` / ``word_translation`` / ``word_roma`` 是**逐字**版本（yrc / ytlyric /
+    yromalrc），只有部分歌曲有；界面在没有的时候退化成按行时间摊出来的伪动态。
     """
-    if not song_id or not (want_translation or want_roma):
-        return "", ""
+
+    lrc: str = ""
+    translation: str = ""
+    roma: str = ""
+    word: str = ""
+    word_translation: str = ""
+    word_roma: str = ""
+
+    @property
+    def is_empty(self) -> bool:
+        return not (self.lrc or self.word)
+
+
+def fetch_lyric_bundle(
+    song_id: str,
+    *,
+    want_translation: bool = True,
+    want_roma: bool = False,
+    want_word: bool = True,
+) -> Optional[LyricBundle]:
+    """一次请求取回逐行歌词 + 翻译 + 罗马音 + 逐字歌词。
+
+    为什么要合成一次：老代码是「``get_lyric`` 取逐行」+「``fetch_translation``
+    取翻译」两次请求，而**同一个接口**在带上 ``yv=-1, ytv=-1, yrv=-1`` 之后
+    就会把逐字歌词一并下发（实测 2026-10，登录与否都一样）。于是三次需求
+    （逐行 / 翻译 / 逐字）合并成一次网络往返。
+
+    失败（网络异常、返回不是 JSON、``code`` 非 200）返回 ``None``，
+    由调用方决定是否退回逐音源的 ``get_lyric``。
+    """
+    song_id = str(song_id or "").strip()
+    if not song_id:
+        return None
     src = _wy()
     if src is None:
-        return "", ""
+        return None
+
+    data: Dict[str, object] = {
+        "id": song_id,
+        "lv": -1,
+        "tv": -1 if want_translation else 0,
+        "rv": -1 if want_roma else 0,
+        "kv": -1,
+    }
+    if want_word:
+        data.update({"yv": -1, "ytv": -1 if want_translation else 0,
+                     "yrv": -1 if want_roma else 0})
     try:
-        resp = src._eapi_post(  # noqa: SLF001 - 复用已实现的加密通道
-            "/api/song/lyric",
-            {"id": str(song_id), "lv": -1, "tv": -1, "rv": -1, "kv": -1},
-        )
+        resp = src._eapi_post("/api/song/lyric", data)  # noqa: SLF001
     except Exception as e:
-        logger.debug("获取翻译歌词失败: %s", e)
-        return "", ""
-    if not isinstance(resp, dict):
-        return "", ""
+        logger.debug("获取歌词失败 [%s]: %s", song_id, e)
+        return None
+    if not isinstance(resp, dict) or resp.get("code") != 200:
+        return None
 
     def _pick(key: str) -> str:
         node = resp.get(key)
@@ -352,9 +392,35 @@ def fetch_translation(
             return str(node.get("lyric") or "")
         return ""
 
-    translation = _pick("tlyric") if want_translation else ""
-    roma = _pick("romalrc") if want_roma else ""
-    return translation, roma
+    bundle = LyricBundle(
+        lrc=_pick("lrc"),
+        translation=_pick("tlyric"),
+        roma=_pick("romalrc"),
+        word=_pick("yrc"),
+        word_translation=_pick("ytlyric"),
+        word_roma=_pick("yromalrc"),
+    )
+    if bundle.is_empty:
+        return None
+    return bundle
+
+
+def fetch_translation(
+    song_id: str, *, want_translation: bool = True, want_roma: bool = False
+) -> Tuple[str, str]:
+    """获取翻译歌词与罗马音歌词（逐音源兜底路径用）。
+
+    FMCL 的 ``get_lyric`` 其实请求了 ``tv``/``rv`` 却只读 ``lrc.lyric``，
+    翻译与罗马音形同虚设；这里真正接上。
+    """
+    if not song_id or not (want_translation or want_roma):
+        return "", ""
+    bundle = fetch_lyric_bundle(
+        song_id, want_translation=want_translation, want_roma=want_roma, want_word=False
+    )
+    if bundle is None:
+        return "", ""
+    return bundle.translation, bundle.roma
 
 # ──────────────────────────────────────────────────────────────
 # 发现页

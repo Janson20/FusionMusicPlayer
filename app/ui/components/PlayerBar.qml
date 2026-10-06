@@ -103,7 +103,7 @@ Rectangle {
                     anchors.fill: parent
                     radius: Theme.radius
                     color: Qt.rgba(0, 0, 0, 0.45)
-                    opacity: coverMouse.containsMouse ? 1 : 0
+                    opacity: coverMouse.containsMouse && control.canExpand ? 1 : 0
                     Behavior on opacity { NumberAnimation { duration: Theme.durationFast } }
                     FluIcon {
                         anchors.centerIn: parent
@@ -113,13 +113,31 @@ Rectangle {
                     }
                 }
 
+                // 左键展开播放页，右键存封面
                 MouseArea {
                     id: coverMouse
+                    objectName: "playerBarCoverArea"
                     anchors.fill: parent
+                    acceptedButtons: Qt.LeftButton | Qt.RightButton
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    enabled: control.canExpand
-                    onClicked: control.openNowPlaying()
+                    onClicked: function (mouse) {
+                        if (mouse.button === Qt.RightButton)
+                            coverMenu.popup()
+                        else if (control.canExpand)
+                            control.openNowPlaying()
+                    }
+                }
+
+                FluMenu {
+                    id: coverMenu
+                    objectName: "playerBarCoverMenu"
+                    FluMenuItem {
+                        objectName: "playerBarSaveCoverItem"
+                        text: "保存封面…"
+                        enabled: player.currentTrack !== null
+                        onClicked: coverSaveDialog.openFor(player.currentTrack)
+                    }
                 }
             }
 
@@ -499,5 +517,10 @@ Rectangle {
                 onClicked: control.expandToggled()
             }
         }
+    }
+
+    // 封面「另存为」（见 components/CoverSaveDialog.qml）
+    CoverSaveDialog {
+        id: coverSaveDialog
     }
 }

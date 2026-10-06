@@ -197,6 +197,26 @@ Item {
                     border.width: 1
                     border.color: Theme.dark ? "#33FFFFFF" : "#12000000"
                 }
+
+                // 右键存封面（大封面点左键没有别的用途，所以只吃右键）
+                MouseArea {
+                    objectName: "nowPlayingCoverArea"
+                    anchors.fill: parent
+                    acceptedButtons: Qt.RightButton
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: coverMenu.popup()
+                }
+
+                FluMenu {
+                    id: coverMenu
+                    objectName: "nowPlayingCoverMenu"
+                    FluMenuItem {
+                        objectName: "nowPlayingSaveCoverItem"
+                        text: "保存封面…"
+                        enabled: player.currentTrack !== null
+                        onClicked: coverSaveDialog.openFor(player.currentTrack)
+                    }
+                }
             }
 
             ColumnLayout {
@@ -437,13 +457,57 @@ Item {
 
                     readonly property bool active: lyricRow.index === player.lyricIndex
 
+                    // 逐字填充的三个前提：这一行是当前行、开关是开的、**而且这一行真的
+                    // 有逐字数据**（网易云 yrc，或按行时间摊出来的伪动态）。缺一条就
+                    // 退回原来的整行高亮 —— 没有数据的行硬做填充只会跟唱词脱节。
+                    readonly property bool karaoke: lyricRow.active && settings.lyricDynamic
+                                                    && lyricRow.modelData.dynamic === true
+
+                    /*! 逐字着色：已唱的字是强调色，**正在唱的那个字**在「未唱色 → 强调色」
+                        之间插值，剩下的还是未唱色。
+
+                        为什么用富文本逐字着色，而不是「双层文本 + 裁剪」：Qt 6 的 Text
+                        没有 positionToRectangle()（那是 TextEdit 才有的方法，实测
+                        `Property 'positionToRectangle' of object QQuickText is not a
+                        function`），要走裁剪就得换成两个 TextEdit 并手动刷新几何。
+                        富文本这条路换行、省略号、对齐全都照旧生效，代价是填充边界按
+                        字符推进（当前字有渐变，观感上与连续推进差别很小）。
+                    */
+                    function karaokeMarkup(progress) {
+                        var text = lyricRow.modelData.text
+                        var rest = '<font color="' + Theme.textPrimary + '">'
+                        var sung = '<font color="' + Theme.accent + '">'
+                        var i = Math.floor(progress)
+                        if (!(progress > 0))
+                            return rest + escapeText(text) + "</font>"
+                        if (i >= text.length)
+                            return sung + escapeText(text) + "</font>"
+                        // 当前字的颜色按它在字内的进度插值
+                        var mid = Theme.mix(Theme.accent, Theme.textPrimary, 1 - (progress - i))
+                        return sung + escapeText(text.substring(0, i)) + "</font>"
+                             + '<font color="' + mid + '">' + escapeText(text.charAt(i)) + "</font>"
+                             + rest + escapeText(text.substring(i + 1)) + "</font>"
+                    }
+
+                    // 富文本里 & < > 是标记，歌词正文必须转义（歌词里出现「<」很正常）
+                    function escapeText(value) {
+                        return String(value).replace(/&/g, "&amp;")
+                                            .replace(/</g, "&lt;")
+                                            .replace(/>/g, "&gt;")
+                    }
+
                     FluText {
                         id: mainText
+                        objectName: "lyricMainText"
                         width: parent.width
-                        text: lyricRow.modelData.text
+                        text: lyricRow.karaoke
+                            ? lyricRow.karaokeMarkup(player.lyricProgress)
+                            : lyricRow.modelData.text
+                        textFormat: lyricRow.karaoke ? Text.StyledText : Text.PlainText
                         font.pixelSize: lyricRow.active ? 19 : 15
                         font.weight: lyricRow.active ? Font.Bold : Font.Normal
-                        color: lyricRow.active
+                        // 逐字填充时每个字都带自己的颜色，这个 color 只在非逐字时生效
+                        color: lyricRow.active && !lyricRow.karaoke
                             ? Theme.accent
                             : (lyricRow.index < player.lyricIndex ? Theme.textTertiary : Theme.textSecondary)
                         horizontalAlignment: control.lyricAlign
@@ -460,6 +524,7 @@ Item {
 
                     FluText {
                         id: subText
+                        objectName: "lyricSubText"
                         width: parent.width
                         anchors.top: mainText.bottom
                         anchors.topMargin: 4
@@ -716,5 +781,10 @@ Item {
                 onClicked: control.showLyrics = !control.showLyrics
             }
         }
+    }
+
+    // 封面「另存为」（见 components/CoverSaveDialog.qml）
+    CoverSaveDialog {
+        id: coverSaveDialog
     }
 }

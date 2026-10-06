@@ -26,6 +26,12 @@
     「记住我的选择」没写进设置；以及最后一步 —— 点「退出程序」必须**真的**退出
     （``Qt.quit()`` 在托盘图标露过面之后会被吞掉，用户再点 ✕ 又弹一次询问框，
     看着就是死循环，所以这里用 ``exit(0)``，并由 ``aboutToQuit`` 认领）。
+11. 逐字歌词（``panels/NowPlayingPanel.qml`` + ``core/lyrics.py``）：有逐字数据却
+    还按整行高亮（属性接上了但界面没用上）、关掉开关之后还在动。
+12. 封面保存（``components/CoverSaveDialog.qml`` + ``core/covers.py``）：右键菜单
+    弹不出来、另存为的默认名字不对、扩展名不按文件头纠正、失败时静默。
+13. 音频缓存（``core/cache.py``）：按**播放地址**当键导致同一首歌存好几份
+    （地址里嵌着时间戳），以及设置里那个「清理重复文件」按钮点了没反应。
 
 无显示环境（CI）下需要一个虚拟屏幕::
 
@@ -46,7 +52,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ["FUSION_MUSIC_HOME"] = tempfile.mkdtemp(prefix="fusion_uitest_")
 
 from PySide6.QtCore import (  # noqa: E402
+    Q_ARG,
     QEventLoop,
+    QMetaObject,
     QObject,
     QPoint,
     QPointF,
@@ -485,12 +493,194 @@ class UiProbe(Application):
         self.settings.set("lyrics.alignment", "center")
         self.pump(400)
 
+        self.guard(self.step_karaoke)
+        self.guard(self.step_cover_save)
         self.guard(self.step_song_wiki, panel)
 
         self.eval_js("app.setExpanded(false)")
         self.pump(600)
 
         self.guard(self.step_artist)
+
+    # ── 逐字（动态）歌词 ────────────────────────────────────
+    def step_karaoke(self):
+        """逐字歌词：有逐字数据时按进度着色，关掉开关 / 没有数据就回到整行高亮。
+
+        要守住的是「接上了但没有真的生效」这类毛病：光有 ``lyricProgress`` 属性
+        不算数 —— 界面上必须能看见**已唱的字**被染成强调色、颜色边界随进度移动，
+        而关掉开关之后必须回到原来的样子（否则「设置里关掉了还在动」）。
+        """
+        from app.core.lyrics import Lyrics
+
+        lyrics = Lyrics()
+        lyrics.parse("[00:01.00]第一句测试歌词\n[00:11.00]第二句测试歌词\n")
+        lyrics.apply_pseudo()
+        self.player._lyrics = lyrics
+        self.player._lyric_index = 0
+        self.player._lyric_progress = 0.0
+        self.player.lyricChanged.emit()
+        self.player.lyricIndexChanged.emit()
+        self.player.lyricProgressChanged.emit()
+        self.pump(600)
+
+        accent = str(self.settings.accent).lower().lstrip("#")
+        active = self.active_lyric_text()
+        check("逐字歌词行渲染出来了", active is not None)
+        if active is None:
+            return
+        styled, markup = self.lyric_markup(active)
+        check("有逐字数据的当前行走富文本着色", styled is True, f"markup={markup[:60]!r}")
+        check("进度为 0 时还没有字被点亮", accent not in markup.lower(),
+              f"markup={markup[:60]!r}")
+
+        # 唱到第 2.5 个字：前两个字应当是强调色，第三个字在过渡中
+        self.player._lyric_progress = 2.5
+        self.player.lyricProgressChanged.emit()
+        self.pump(400)
+        styled, markup = self.lyric_markup(active)
+        check("进度推进后有字被点亮", accent in markup.lower(), f"markup={markup[:80]!r}")
+        check("已唱的字包在强调色标签里",
+              f'<font color="#{accent}">第一</font>' in markup.lower(),
+              f"markup={markup[:80]!r}")
+
+        # 一行唱完：整行都是强调色
+        self.player._lyric_progress = float(len(lyrics.lines[0].text))
+        self.player.lyricProgressChanged.emit()
+        self.pump(400)
+        _styled, markup = self.lyric_markup(active)
+        check("整行唱完后不再有未唱色",
+              markup.lower().count("<font") == 1, f"markup={markup[:80]!r}")
+
+        # 关掉开关 → 回到纯文本（原来的整行高亮）
+        self.settings.setBool("lyrics.dynamic", False)
+        self.pump(400)
+        styled, markup = self.lyric_markup(active)
+        check("关掉逐字开关后是纯文本", styled is False and "<font" not in markup,
+              f"styled={styled} markup={markup[:60]!r}")
+        self.settings.setBool("lyrics.dynamic", True)
+        self.pump(300)
+
+        # 没有逐字数据的行（比如本地 .lrc 又没匹配上在线身份）保持整行高亮
+        plain = Lyrics()
+        plain.parse("[00:01.00]没有逐字数据的行\n[00:11.00]第二行\n")
+        self.player._lyrics = plain
+        self.player._lyric_index = 0
+        self.player._lyric_progress = 0.0
+        self.player.lyricChanged.emit()
+        self.player.lyricIndexChanged.emit()
+        self.pump(500)
+        active = self.active_lyric_text()
+        styled, markup = self.lyric_markup(active)
+        check("没有逐字数据的行不做着色", styled is False and "<font" not in markup,
+              f"styled={styled} markup={markup[:60]!r}")
+
+        # 设置页里的开关真的在（配置项写了但界面没入口，等于没这个功能）
+        win = self.find(SETTINGS_TITLE)
+        if win is not None:
+            previous = win.property("section")
+            win.setProperty("section", 4)      # 歌词
+            self.pump(500)
+            switch = win.findChild(QObject, "lyricDynamicSwitch")
+            check("设置 → 歌词里有逐字歌词开关", switch is not None)
+            check("开关状态跟着配置走",
+                  switch is not None and bool(switch.property("checked")) is True)
+            win.setProperty("section", previous if previous is not None else 0)
+            self.pump(300)
+
+    # ── 封面保存 ────────────────────────────────────────────
+    def step_cover_save(self):
+        """封面保存：右键入口、另存为的默认值、真的落一个文件出来。
+
+        封面来源用本地 ``file://``（等价于本地曲目内嵌封面那条路），
+        不联网也能把「取封面 → 纠正扩展名 → 原子落盘 → 弹通知」整条链走完。
+        """
+        from pathlib import Path
+        import tempfile
+
+        panel = self.window.findChild(QObject, "nowPlayingPanel")
+        area = self.window.findChild(QObject, "nowPlayingCoverArea")
+        menu = self.window.findChild(QObject, "nowPlayingCoverMenu")
+        save_item = self.window.findChild(QObject, "nowPlayingSaveCoverItem")
+        check("展开播放页封面有右键区 / 菜单 / 保存项",
+              None not in (area, menu, save_item))
+        if None in (area, menu, save_item):
+            return
+        check("保存项的文字是「保存封面…」",
+              str(save_item.property("text")) == "保存封面…",
+              f"{save_item.property('text')!r}")
+
+        # 右键真能弹出菜单（MouseArea 只吃右键，左键留给别的交互）
+        self.right_click(self.to_point(area, area.property("width") / 2,
+                                       area.property("height") / 2))
+        self.pump(500)
+        check("封面右键弹出菜单", bool(menu.property("visible")))
+        menu.setProperty("visible", False)
+        self.pump(300)
+
+        tmp = Path(tempfile.mkdtemp(prefix="fusion_smoke_cover_"))
+        png = _write_test_png(tmp / "embedded.png")
+        track = {
+            "name": "探针曲目", "singer": "探针歌手", "source": "local",
+            "cover": QUrl.fromLocalFile(str(png)).toString(),
+        }
+        hint = self.app.coverSaveHint(track)
+        hint = dict(hint) if isinstance(hint, dict) else {}
+        check("另存为默认文件名是「歌手 - 歌名」",
+              hint.get("name") == "探针歌手 - 探针曲目.png", f"{hint.get('name')!r}")
+        check("另存为给了 file:// 的默认目录与文件",
+              str(hint.get("folder", "")).startswith("file:")
+              and str(hint.get("file", "")).startswith("file:"),
+              f"{hint}")
+
+        # 对话框自己的准备逻辑（不 open()：系统原生对话框是模态阻塞的，点不了）。
+        # 用 invokeMethod 直接传参，**不能**把曲目拼进 QQmlExpression 的表达式字符串 ——
+        # 那样中文会变成 "?"（实测「探针歌手 - 探针曲目」进到对话框里成了 "????.jpg"）。
+        dialog = self.window.findChild(QObject, "coverSaveDialog")
+        check("另存为对话框组件在", dialog is not None)
+        if dialog is not None:
+            prepared = QMetaObject.invokeMethod(
+                dialog, "prepare", Qt.ConnectionType.DirectConnection, Q_ARG("QVariant", track)
+            )
+            check("对话框能按曲目准备好默认值", bool(prepared))
+            current = dialog.property("currentFile")
+            current_text = current.toString() if current is not None else ""
+            check("默认文件名与扩展名进了对话框",
+                  "探针歌手 - 探针曲目.png" in current_text
+                  and current_text.startswith("file:"),
+                  f"{current_text!r}")
+            check("对话框默认扩展名跟着封面格式走",
+                  str(dialog.property("defaultSuffix")) == "png",
+                  f"{dialog.property('defaultSuffix')!r}")
+
+        messages: list[str] = []
+        self.app.notify.connect(lambda level, message: messages.append(f"{level}:{message}"))
+
+        # ① 正常保存：目标扩展名故意写错（存的是 PNG，名字给 .jpg）
+        dest = tmp / "out" / "手打名字.jpg"
+        self.app.saveCover(track, QUrl.fromLocalFile(str(dest)).toString())
+        fixed = dest.with_suffix(".png")
+        saved = self.wait_until(lambda: fixed.exists(), timeout_ms=8000)
+        check("封面真的落到磁盘上", saved, f"{list((tmp / 'out').glob('*')) if (tmp / 'out').exists() else '目录都没建'}")
+        check("扩展名按文件头纠正成 .png",
+              saved and not dest.exists(), f"{dest.name} / {fixed.name}")
+        check("落盘的字节与源封面一致",
+              saved and fixed.read_bytes() == png.read_bytes())
+        check("落盘后没有任何 *.part 残渣",
+              not list((tmp / "out").glob("*.part")))
+        self.wait_until(lambda: any("封面已保存" in m for m in messages), timeout_ms=4000)
+        check("保存成功有通知", any("封面已保存" in m for m in messages), f"{messages}")
+
+        # ② 没有封面可存：给的是能读懂的中文失败提示，而不是静默失败
+        messages.clear()
+        self.app.saveCover({"name": "没有封面的本地曲", "source": "local"},
+                           QUrl.fromLocalFile(str(tmp / "nothing.jpg")).toString())
+        self.wait_until(lambda: bool(messages), timeout_ms=8000)
+        check("没有封面时给出失败提示",
+              any("保存封面失败" in m for m in messages), f"{messages}")
+        check("失败时不会凭空造出文件", not (tmp / "nothing.jpg").exists())
+
+        panel.setProperty("showLyrics", True)
+        self.pump(200)
 
     # ── 歌曲百科标签页 ──────────────────────────────────────
     def step_song_wiki(self, panel):
@@ -884,12 +1074,55 @@ class UiProbe(Application):
         self.guard(self.step_session_restore)
 
         self.guard(self.step_equalize)
+        self.guard(self.step_cache_dedupe)
         self.guard(self.step_updater)
         self.guard(self.step_many_artists)
 
         self.guard(self.step_tray)
 
         self.guard(self.step_signal_params)
+
+    # ── 音频缓存去重 ────────────────────────────────────────
+    def step_cache_dedupe(self):
+        """音频缓存去重：内容相同的只留一份，并且真的弹通知。
+
+        背景：老版本按**播放地址**当缓存键，而地址里嵌着当前时间戳，同一首歌
+        每次解析都不一样 —— 于是同一首歌被存好几份（实测用户盘上 140 个文件里
+        44 组内容完全重复）。现在按曲目身份缓存（见 core/cache.py:media_identity），
+        设置里的这个按钮用来收拾已经堆在盘上的旧账。
+        """
+        from app import paths
+
+        win = self.find(SETTINGS_TITLE)
+        if win is not None:
+            win.setProperty("section", 6)   # 存储
+            self.pump(500)
+            check("设置 → 存储里有「清理重复文件」按钮",
+                  win.findChild(QObject, "dedupeCacheButton") is not None,
+                  "按钮不在（分区或对象名变了）")
+
+        base = paths.media_cache_dir()
+        base.mkdir(parents=True, exist_ok=True)
+        payload = b"cache-bytes" * 512
+        first = base / "smoke-dedupe-a.mp3"
+        second = base / "smoke-dedupe-b.mp3"
+        first.write_bytes(payload)
+        second.write_bytes(payload)
+        try:
+            messages: list[str] = []
+            self.settings.message.connect(lambda text: messages.append(str(text)))
+            self.settings.dedupeCache()
+            cleaned = self.wait_until(
+                lambda: not (first.exists() and second.exists()), timeout_ms=10000
+            )
+            check("重复的缓存文件被删掉一份",
+                  cleaned and (first.exists() or second.exists()),
+                  f"a={first.exists()} b={second.exists()}")
+            check("清理完给了通知",
+                  any("重复" in m for m in messages), f"{messages}")
+        finally:
+            first.unlink(missing_ok=True)
+            second.unlink(missing_ok=True)
 
     # ── 音量均衡 ────────────────────────────────────────────
     def step_equalize(self):
@@ -1200,6 +1433,51 @@ class UiProbe(Application):
     def click(self, point: QPoint) -> None:
         QTest.mouseClick(self.window, Qt.MouseButton.LeftButton,
                          Qt.KeyboardModifier.NoModifier, point, -1)
+
+    def right_click(self, point: QPoint) -> None:
+        QTest.mouseClick(self.window, Qt.MouseButton.RightButton,
+                         Qt.KeyboardModifier.NoModifier, point, -1)
+
+    def active_lyric_text(self):
+        """歌词列表里**当前高亮**那一行的文本项（``lyricMainText``）。"""
+        index = self.player.lyricIndex
+        texts = self.find_items("lyricMainText")
+        texts.sort(key=lambda t: t.mapToItem(None, QPointF(0, 0)).y())
+        if not texts:
+            return None
+        if 0 <= index < len(texts):
+            return texts[index]
+        return texts[0]
+
+    def lyric_markup(self, item) -> tuple:
+        """歌词文本项的 ``(是否富文本, 文本内容)``。
+
+        两个坑：``textFormat`` 从 Python 侧读会报
+        ``Can't find converter for 'QQuickText::TextFormat'``；而枚举名 ``Text``
+        只能在**带 QtQuick 导入的那个上下文**里解析（用全局根上下文会报
+        ``ReferenceError: Text is not defined``，探针
+        ``tools/probe_text_format.py`` 里复现过）。所以两件事都在可视项自己的
+        上下文里算。
+        """
+        if item is None:
+            return (None, "")
+        text = str(item.property("text") or "")
+        fmt = self.qml_enum(item, "String(textFormat)")
+        styled = self.qml_enum(item, "Text.StyledText")
+        if fmt is None or styled is None:
+            return (None, text)
+        return (str(fmt) == str(styled), text)
+
+    def qml_enum(self, scope_item, expression: str):
+        """在 ``scope_item`` 自己的 QML 上下文里求值（枚举名要靠它解析）。"""
+        context = None
+        try:
+            context = self.engine.contextForObject(scope_item)
+        except Exception:
+            context = None
+        expr = QQmlExpression(context or self.engine.rootContext(), scope_item, expression)
+        value, _undefined = expr.evaluate()
+        return None if expr.hasError() else value
 
     def click_item(self, item) -> None:
         self.click(self.to_point(item, item.property("width") / 2,

@@ -6,6 +6,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 from typing import List
 
 from PySide6.QtCore import QObject, Property, Signal, Slot
@@ -57,6 +58,12 @@ TARGET_LUFS_OPTIONS = [
     {"id": -10.0, "name": "-10 LUFS（很响）"},
 ]
 
+class _CacheEmitter(QObject):
+    """把缓存整理的耗时结果投递回主线程（Qt 会自动排队到接收者线程）。"""
+
+    deduped = Signal(int, int)   # (删除文件数, 释放字节数)；-1 表示失败
+
+
 class SettingsController(QObject):
     changed = Signal()
     cacheChanged = Signal()
@@ -68,6 +75,10 @@ class SettingsController(QObject):
         super().__init__(parent)
         self._config = config
         self._loudness = loudness
+        # 缓存去重放在工作线程里做（要读几 GB 的盘），结果用信号投回主线程
+        self._cache_emitter = _CacheEmitter(self)
+        self._cache_emitter.deduped.connect(self._on_deduped)
+        self._dedupe_busy = False
         # backgroundImage 会被 QML 反复求值（每个窗口的背景层都绑它），
         # 而解析要做文件校验，所以按文件名缓存一次
         self._background_cache_key: str | None = None
@@ -166,6 +177,11 @@ class SettingsController(QObject):
     @Property(bool, notify=changed)
     def showRomaji(self) -> bool:  # noqa: N802
         return bool(self._config.get("lyrics.show_romaji", False))
+
+    @Property(bool, notify=changed)
+    def lyricDynamic(self) -> bool:  # noqa: N802
+        """逐字（动态）歌词：有 yrc 逐字数据就用真的，没有就按行时间摊伪动态。"""
+        return bool(self._config.get("lyrics.dynamic", True))
 
     @Property(int, notify=changed)
     def lyricFontSize(self) -> int:  # noqa: N802
@@ -483,6 +499,40 @@ class SettingsController(QObject):
         cache.trim_cache(self.mediaCacheLimit)
         self.refreshCache()
         self.message.emit("已按配额清理缓存")
+
+    @Slot()
+    def dedupeCache(self) -> None:  # noqa: N802
+        """清理媒体缓存里内容重复的文件（老版本按播放地址当键留下的旧账）。
+
+        可能要读几 GB 的盘，所以丢进工作线程；重复点击只认第一次。
+        """
+        if self._dedupe_busy:
+            return
+        self._dedupe_busy = True
+        self.message.emit("正在比对重复的缓存文件…")
+        threading.Thread(
+            target=self._dedupe_worker, daemon=True, name="dedupe-cache"
+        ).start()
+
+    def _dedupe_worker(self) -> None:
+        """（工作线程）只做比对与删除，结果用信号投回主线程。"""
+        try:
+            removed, freed = cache.dedupe_media()
+        except Exception:  # pragma: no cover - 兜底，别把线程异常吞掉
+            logger.exception("清理重复缓存异常")
+            removed, freed = -1, 0
+        self._cache_emitter.deduped.emit(int(removed), int(freed))
+
+    @Slot(int, int)
+    def _on_deduped(self, removed: int, freed: int) -> None:
+        self._dedupe_busy = False
+        self.cacheChanged.emit()
+        if removed < 0:
+            self.errorOccurred.emit("清理重复缓存失败")
+        elif removed == 0:
+            self.message.emit("没有发现内容重复的缓存文件")
+        else:
+            self.message.emit(f"已删除 {removed} 个重复文件，释放 {_human(freed)}")
 
     # ── 音量均衡 ────────────────────────────────────────────
 

@@ -1,14 +1,17 @@
-"""应用级控制器：导航状态、通知、窗口状态、剪贴板。"""
+"""应用级控制器：导航状态、通知、窗口状态、剪贴板、封面保存。"""
 
 from __future__ import annotations
 
 import logging
+import threading
+from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from PySide6.QtCore import QObject, Property, Signal, Slot
+from PySide6.QtCore import QObject, Property, QStandardPaths, QUrl, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 
 from .. import paths
+from ..core import covers
 from ..sources import SOURCE_META
 
 logger = logging.getLogger(__name__)
@@ -110,6 +113,12 @@ def _system_tray_available() -> bool:
         return False
 
 
+class _CoverEmitter(QObject):
+    """把封面保存线程的结果投递回主线程（Qt 会自动排队到接收者线程）。"""
+
+    saved = Signal(bool, str)
+
+
 class AppController(QObject):
     pageChanged = Signal()
     expandedChanged = Signal()
@@ -128,6 +137,9 @@ class AppController(QObject):
         self._page = "discover"
         self._expanded = bool(config.get("window.player_expanded", False))
         self._queue_panel = bool(config.get("window.queue_visible", False))
+        # 封面保存：结果要从工作线程回到主线程弹通知
+        self._cover_emitter = _CoverEmitter(self)
+        self._cover_emitter.saved.connect(self._on_cover_saved)
         # 托盘有没有：只问一次。平台集成给的这个答案在一个会话里是稳定的，
         # 界面按它决定要不要给托盘相关的选项（见 close_decision）。
         self._tray_available = _system_tray_available()
@@ -278,6 +290,85 @@ class AppController(QObject):
         logger.info("正在退出程序…")
         QGuiApplication.exit(0)
 
+    # ── 封面保存 ────────────────────────────────────────────
+    #
+    # 交互定的是「弹系统另存为对话框，记住上次选的目录」：QML 侧先问
+    # coverSaveHint() 要默认文件名与默认目录，用户确认后把最终路径交给
+    # saveCover()。下载（可能几十 KB 到几 MB）放在工作线程里做，
+    # 结果再用信号投回主线程弹通知 —— 不能让界面在下载期间卡住。
+
+    def _cover_dir(self) -> Path:
+        """另存为对话框的起始目录：上次存过的 → 系统图片目录 → 用户主目录。"""
+        configured = str(self._config.get("storage.cover_dir", "") or "").strip()
+        if configured:
+            path = Path(configured).expanduser()
+            if path.is_dir():
+                return path
+        try:
+            pictures = QStandardPaths.writableLocation(
+                QStandardPaths.StandardLocation.PicturesLocation
+            )
+        except Exception as e:  # pragma: no cover - 依赖运行环境
+            logger.debug("取系统图片目录失败: %s", e)
+            pictures = ""
+        if pictures and Path(pictures).is_dir():
+            return Path(pictures)
+        return Path.home()
+
+    @Slot("QVariant", result="QVariant")
+    def coverSaveHint(self, track) -> Dict[str, str]:  # noqa: N802
+        """另存为对话框的默认值：``{name, file, folder}``（后两个是 file:// URL）。
+
+        扩展名是按封面地址**猜**的（``.jpg`` 起步），真正落盘时会按文件头纠正，
+        见 :func:`app.core.covers.save_cover`。
+        """
+        info = covers.as_dict(track)
+        suffix = covers.suggest_suffix(info)
+        name = covers.suggest_stem(info) + suffix
+        folder = self._cover_dir()
+        return {
+            "name": name,
+            "suffix": suffix.lstrip("."),
+            "file": QUrl.fromLocalFile(str(folder / name)).toString(),
+            "folder": QUrl.fromLocalFile(str(folder)).toString(),
+        }
+
+    @Slot("QVariant", str)
+    def saveCover(self, track, url: str) -> None:  # noqa: N802
+        """把曲目封面另存到 ``url``（QML FileDialog 给的 ``file://`` URL）。"""
+        info = covers.as_dict(track)
+        if not info:
+            self.error("没有可保存的封面")
+            return
+        threading.Thread(
+            target=self._cover_worker, args=(info, str(url or "")),
+            daemon=True, name="save-cover",
+        ).start()
+
+    def _cover_worker(self, info: Dict[str, Any], url: str) -> None:
+        """（工作线程）只做下载与落盘，结果用信号投回主线程。"""
+        try:
+            path, size = covers.save_cover(info, url)
+        except covers.CoverError as e:
+            self._cover_emitter.saved.emit(False, f"保存封面失败：{e}")
+            return
+        except Exception as e:  # pragma: no cover - 兜底，别把线程里的异常吞掉
+            logger.exception("保存封面异常")
+            self._cover_emitter.saved.emit(False, f"保存封面失败：{e}")
+            return
+        try:
+            self._config.set("storage.cover_dir", str(Path(path).parent))
+        except Exception as e:
+            logger.debug("记住封面保存目录失败: %s", e)
+        self._cover_emitter.saved.emit(True, f"封面已保存：{path}（{_human_size(size)}）")
+
+    @Slot(bool, str)
+    def _on_cover_saved(self, ok: bool, message: str) -> None:
+        if ok:
+            self.info(message)
+        else:
+            self.error(message)
+
     # ── 通知 ────────────────────────────────────────────────
 
     @Slot(str)
@@ -407,3 +498,16 @@ class AppController(QObject):
     @Slot()
     def flush(self) -> None:
         self._config.save()
+
+
+def _human_size(size: int) -> str:
+    """字节数 → 人话（通知里显示封面体积用）。"""
+    try:
+        value = float(size)
+    except (TypeError, ValueError):
+        return "0 B"
+    for unit in ("B", "KB", "MB"):
+        if value < 1024 or unit == "MB":
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} MB"

@@ -198,6 +198,11 @@ class Application(QObject):
     @Slot()
     def _on_settings_changed(self) -> None:
         self._apply_source_prefs()
+        # 逐字歌词开关：正在播的这首立刻跟上（没有真逐字就先补伪动态）
+        try:
+            self.player.applyLyricSettings()
+        except Exception as e:
+            logger.debug("应用歌词设置失败: %s", e)
 
     @Slot(str)
     def _on_fallback(self, source_id: str) -> None:

@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.core.lyrics import parse_lyrics  # noqa: E402
+from app.core.lyrics import Lyrics, parse_lyrics  # noqa: E402
 from app.core.models import Track, format_duration  # noqa: E402
 from app.core.queue import PlayMode, PlayQueue, mode_from_name  # noqa: E402
 from app.security.vault import CredentialVault  # noqa: E402
@@ -2202,11 +2202,396 @@ def test_background_config_defaults_are_sane():
                 "surface_sidebar", "surface_bottom", "surface_overlay", "surface_card"):
         value = appearance[key]
         assert isinstance(value, int) and 0 <= value <= 100, (key, value)
-    # 分区默认值要拉开层次：贴边的（侧边栏 / 播放栏）比覆盖层实，卡片最实
-    assert appearance["surface_card"] > appearance["surface_bottom"] > 0
-    assert appearance["surface_overlay"] < appearance["surface_card"]
+    # 默认值是照「图看清楚、面板别糊住图」定的：背景图给足不透明度、磨砂很轻
+    assert appearance["background_opacity"] >= 80
+    assert appearance["background_blur"] <= 15
+    # 四个分区里内容区的卡片最透、贴着窗口边的播放栏最实
+    surfaces = {k: appearance[k] for k in
+                ("surface_sidebar", "surface_bottom", "surface_overlay", "surface_card")}
+    assert surfaces["surface_card"] == min(surfaces.values()), surfaces
+    assert surfaces["surface_bottom"] == max(surfaces.values()), surfaces
     # 未启用图片时，面板必须是实色（否则老用户升级后界面会莫名其妙变透）
     assert appearance["background"] != "image"
+
+
+# ──────────────────────────────────────────────────────────────
+# 逐字（动态）歌词
+# ──────────────────────────────────────────────────────────────
+
+#: 网易云真实响应的片段（海屿你 / 1973665667，2026-10 实测）：
+#: 逐字行是 ``[行起始,行时长](字起始,字时长,标记)字…``，字与字之间还夹着带时长的空格
+YRC_SAMPLE = (
+    "[0,1000](0,1000,0) 作词 : Fanko冯思源\n"
+    "[13010,4780](13010,660,0)从(13670,670,0)不(14340,30,0) (14370,480,0)主"
+    "(14850,610,0)动(15460,30,0) (15490,330,0)示(15820,1070,0)弱(16890,900,0) \n"
+    "[17790,1770](17790,170,0)我(17960,450,0)们(18410,290,0)的(18700,470,0)过(19170,390,0)去\n"
+)
+LRC_SAMPLE = (
+    "[00:00.00] 作词 : Fanko冯思源\n"
+    "[00:13.47]从不主动示弱\n"
+    "[00:17.73]我们的过去\n"
+)
+
+
+def test_lyrics_word_level_keeps_char_ranges_after_trim():
+    """``<start,dur>`` 形式的逐字歌词：首尾空白裁掉后，字符区间要跟着平移。
+
+    时间沿用 FMCL 的行为（标记里写多少就是多少，不叠加行时间）—— 这个格式目前
+    **没有任何音源在用**（网易云的逐字走 yrc，见下面的用例），保留原语义是为了
+    不与 vendored 代码产生行为分叉。
+    """
+    ly = parse_lyrics("[00:01.00] <0,300>你<300,300>好 \n")
+    line = ly.lines[0]
+    assert line.text == "你好"
+    assert [(w.text, w.char_start, w.char_end) for w in line.words] == [
+        ("你", 0, 1), ("好", 1, 2)
+    ]
+    assert [w.start for w in line.words] == [0, 300]
+
+
+def test_lyrics_yrc_line_parsing():
+    """yrc 直接解析：文本、字符区间、末字时长都要对。
+
+    注意 ``_parse_line`` 会先 ``strip`` 整行，所以 yrc 里的节拍空格只剩行内那些 ——
+    生产路径上主歌词另有逐行 LRC（yrc 只提供字时间，见下面的 set_words），
+    这里保持"忠实解析"即可。
+    """
+    ly = parse_lyrics(YRC_SAMPLE)
+    assert [l.text for l in ly.lines] == ["作词 : Fanko冯思源", "从不 主动 示弱", "我们的过去"]
+    assert [l.time for l in ly.lines] == [0, 13010, 17790]
+    assert all(l.word_source == "api" for l in ly.lines)
+
+    line = ly.lines[1]
+    # 任何一个字都要占住真实的字符（曾经出现过后缀标记留下的"幽灵字"）
+    assert all(w.char_end > w.char_start for w in line.words)
+    assert [w.text for w in line.words] == ["从", "不", " ", "主", "动", " ", "示", "弱"]
+    # 空格占掉的 30 ms 就是字与字之间的空隙
+    assert line.words[2].start == 14340
+    assert line.words[2].end == 14370
+    # 末字没有自己的标记（`(15820,1070,0)弱` 是最后一个），时长按行尾倒推
+    assert line.words[-1].text == "弱"
+    assert line.words[-1].start == 15820
+    assert line.words[-1].end == 16890
+
+
+def test_lyrics_set_words_matches_by_text_not_only_time():
+    """逐字贴到逐行歌词上：两边行时间差 460 ms 也要认得出是同一行。"""
+    ly = parse_lyrics(LRC_SAMPLE)
+    assert ly.lines[1].time == 13470          # 逐行歌词自己的时间
+    matched = ly.set_words(YRC_SAMPLE)
+    assert matched == 3
+    # 贴上之后行时间换成 yrc 的（更贴近真实起唱点），行序仍按时间排
+    assert [l.time for l in ly.lines] == [0, 13010, 17790]
+    assert ly.lines[1].is_word_based
+    assert ly.lines[1].words[0].char_end == 1
+    # 重建过排序与查找表，index_at 立刻可用
+    assert ly.index_at(13010) == 1
+    assert ly.index_at(13470) == 1
+
+
+def test_lyrics_set_words_rejects_mismatched_text():
+    """文本对不上就不贴 —— 宁可没有逐字，也不能把别行的时间贴上来。"""
+    ly = parse_lyrics("[00:13.47]完全不一样的歌词\n")
+    other = "[13010,1000](13010,500,0)从(13510,500,0)不\n"
+    assert ly.set_words(other) == 0
+    assert ly.lines[0].words == []
+
+
+def test_lyrics_set_words_ignores_line_already_having_words():
+    ly = parse_lyrics(YRC_SAMPLE)
+    before = [(w.text, w.start) for w in ly.lines[1].words]
+    assert ly.set_words(YRC_SAMPLE) == 0
+    assert [(w.text, w.start) for w in ly.lines[1].words] == before
+
+
+def test_lyrics_pseudo_dynamics_covers_every_character():
+    ly = parse_lyrics(LRC_SAMPLE)
+    made = ly.apply_pseudo()
+    assert made == 3
+    for line in ly.lines:
+        assert line.word_source == "pseudo"
+        assert len(line.words) == len(line.text)
+        # 字符区间首尾相接、整数
+        assert line.words[0].char_start == 0
+        assert line.words[-1].char_end == len(line.text)
+        for a, b in zip(line.words, line.words[1:]):
+            assert a.char_end == b.char_start
+            assert b.start >= a.end          # 不重叠
+            assert a.duration >= 0
+    # 每字时长按权重分：汉字应该是拉丁字母的两倍
+    assert line.words[0].duration == 220
+
+
+def test_lyrics_pseudo_dynamics_is_capped_and_idempotent():
+    """长间奏不拖着填、最后一首按默认时长、重复调用不覆盖真逐字。"""
+    ly = parse_lyrics("[00:00.00]第一行\n[01:00.00]第二行\n")
+    ly.apply_pseudo()
+    first = ly.lines[0]
+    assert first.words[-1].end - first.time <= 8000       # 上限
+    assert first.words[-1].end - first.time >= 800        # 下限
+    # 最后一行没有"下一行"，按默认 5 秒与自然时长取小
+    last = ly.lines[1]
+    assert last.words[-1].end - last.time <= 5000
+
+    # 已经贴过真逐字的行不受影响
+    ly2 = Lyrics()
+    ly2.parse(LRC_SAMPLE)
+    ly2.set_words(YRC_SAMPLE)
+    sources = [l.word_source for l in ly2.lines]
+    ly2.apply_pseudo()
+    assert [l.word_source for l in ly2.lines] == sources
+
+
+def test_lyrics_char_progress():
+    ly = Lyrics()
+    ly.parse(LRC_SAMPLE)
+    ly.set_words(YRC_SAMPLE)
+
+    assert ly.char_progress(0) == 0.0            # 第一行还没有逐字进度可言（它是整行）
+    assert ly.char_progress(13470) > 0.5         # 第一字唱了一大半
+    assert 1.0 <= ly.char_progress(14000) < 2.0
+    assert ly.char_progress(15820) == 5.0        # 换到下一个字的瞬间
+    # 字与字之间的空隙停在整数上，不会继续往前爬
+    assert ly.char_progress(16900) == 6.0
+    assert ly.char_progress(17700) == 6.0
+    assert ly.char_progress(20000) == 5.0        # 第三行唱完
+
+
+def test_lyrics_char_progress_without_words_is_zero():
+    ly = parse_lyrics(LRC_SAMPLE)
+    assert ly.char_progress(13500) == 0.0
+    assert ly.char_progress(-100) == 0.0
+
+
+def test_lyrics_pseudo_progress_walks_the_line():
+    ly = parse_lyrics("[00:00.00]甲乙丙丁\n[00:04.00]戊己庚辛\n")
+    ly.apply_pseudo()
+    assert ly.char_progress(0) == 0.0
+    assert 0.0 < ly.char_progress(200) < 1.0
+    assert ly.char_progress(2000) == 4.0         # 整行唱完（4 字 × 220 ms）
+    # 到下一行的起点就换行了，进度回到新行的 0
+    assert ly.char_progress(4000) == 0.0
+    assert ly.index_at(3999) == 0 and ly.index_at(4000) == 1
+
+
+def test_lyrics_offset_shifts_words_too():
+    ly = Lyrics()
+    ly.parse("[offset:500]\n" + YRC_SAMPLE)
+    assert ly.lines[1].time == 13510
+    assert ly.lines[1].words[0].start == 13510
+    assert ly.lines[1].words[-1].end == 17390
+
+
+def test_lyrics_to_dicts_marks_dynamic():
+    ly = parse_lyrics(LRC_SAMPLE)
+    assert all(item["dynamic"] is False for item in ly.to_dicts())
+    ly.apply_pseudo()
+    assert all(item["dynamic"] is True for item in ly.to_dicts())
+
+
+# ──────────────────────────────────────────────────────────────
+# 封面保存
+# ──────────────────────────────────────────────────────────────
+
+
+# ──────────────────────────────────────────────────────────────
+# 音频缓存（键与去重）
+# ──────────────────────────────────────────────────────────────
+
+
+def _with_cache_home():
+    """把数据目录指到临时目录（音频缓存落在 data/cache/media 下）。"""
+    from app import paths
+
+    previous = paths._DATA_DIR_OVERRIDE  # noqa: SLF001 - 只为还原
+    home = Path(tempfile.mkdtemp(prefix="fusion_cache_"))
+    paths.set_data_dir(home)
+    paths.ensure_dirs()
+    return home, previous
+
+
+def test_media_cache_keyed_by_track_identity():
+    """同一首歌的不同播放地址只占一份缓存；旧的 URL 键文件会被认领过来。
+
+    背景：网易云的播放地址里嵌着**当前时间戳**
+    （``http://m701.music.126.net/20261006125032/…``），同一首歌每次解析出来的
+    地址都不一样 —— 按 URL 当键等于每次都新建一份（实测用户盘上 140 个文件里
+    44 组内容完全重复，响度分析预取一次、播放又一次）。
+    """
+    from app import paths
+    from app.core import cache
+
+    home, previous = _with_cache_home()
+    try:
+        url_a = "http://m701.music.126.net/20261006125032/abc/song.mp3"
+        url_b = "http://m701.music.126.net/20261006130100/abc/song.mp3"
+        identity = cache.media_identity("wy", "1973665667", "320k")
+        assert identity == "wy:1973665667:320k"
+        # 拿不到曲目身份时退回按 URL 缓存（至少不会串歌）
+        assert cache.media_identity("", "", "320k") == ""
+        assert cache.media_identity("wy", "", "320k") == ""
+
+        # 旧版本按 URL 存的那份：应当被改名认领到身份键上，而不是重下一遍
+        legacy = paths.media_cache_dir() / f"{cache.key_for(url_a)}.mp3"
+        legacy.write_bytes(b"audio-bytes")
+        first = cache.cached_media(url_a, suffix=".mp3", identity=identity)
+        assert first is not None
+        assert Path(first).name == f"{cache.key_for(identity)}.mp3"
+        assert Path(first).read_bytes() == b"audio-bytes"
+        assert not legacy.exists()
+
+        # 地址变了（时间戳不同）仍然命中同一份，不会再存一份
+        second = cache.cached_media(url_b, suffix=".mp3", identity=identity)
+        assert second == first
+        assert len(list(paths.media_cache_dir().iterdir())) == 1
+        assert home is not None
+    finally:
+        paths.set_data_dir(previous)
+
+
+def test_dedupe_media_removes_only_identical_files():
+    """去重只删内容相同的，保留最近用过的那份，删除数与释放字节要报对。"""
+    from app import paths
+    from app.core import cache
+
+    home, previous = _with_cache_home()
+    try:
+        base = paths.media_cache_dir()
+        payload = b"x" * 4096
+        (base / "a.mp3").write_bytes(payload)
+        (base / "b.mp3").write_bytes(payload)       # 与 a 完全相同
+        (base / "c.mp3").write_bytes(b"y" * 4096)   # 大小相同、内容不同
+        (base / "d.flac").write_bytes(b"z" * 100)   # 独一份
+        (base / "half.mp3.part").write_bytes(payload)  # 半截文件不参与
+
+        removed, freed = cache.dedupe_media()
+        assert removed == 1, removed
+        assert freed == 4096, freed
+        left = sorted(p.name for p in base.iterdir())
+        assert len(left) == 4 and "d.flac" in left and "c.mp3" in left
+        assert not ((base / "a.mp3").exists() and (base / "b.mp3").exists())
+
+        # 再跑一次：没有可删的了
+        assert cache.dedupe_media() == (0, 0)
+        assert home is not None
+    finally:
+        paths.set_data_dir(previous)
+
+
+def test_cover_filename_sanitize():
+    from app.core.covers import sanitize_filename
+
+    assert sanitize_filename("洛天依 - 达拉崩吧") == "洛天依 - 达拉崩吧"
+    assert sanitize_filename('a/b\\c:d*e?f"g<h>i|j') == "a_b_c_d_e_f_g_h_i_j"
+    # Windows 不允许文件名以点或空格结尾
+    assert sanitize_filename("歌名... ") == "歌名"
+    # 保留设备名要加前缀，否则在 Windows 上根本建不出来
+    assert sanitize_filename("CON") == "_CON"
+    assert sanitize_filename("lpt1") == "_lpt1"
+    assert sanitize_filename("   ") == "封面"
+    assert sanitize_filename("") == "封面"
+    long_name = sanitize_filename("啊" * 400)
+    assert len(long_name) <= 120
+
+
+def test_cover_suggest_name_and_suffix():
+    from app.core.covers import suggest_stem, suggest_suffix
+
+    assert suggest_stem({"singer": "洛天依", "name": "达拉崩吧"}) == "洛天依 - 达拉崩吧"
+    assert suggest_stem({"singer": "", "name": "达拉崩吧"}) == "达拉崩吧"
+    assert suggest_stem({"singer": "洛天依", "name": ""}) == "洛天依"
+    assert suggest_stem({}) == "封面"
+
+    assert suggest_suffix({"cover": "http://p1.music.126.net/x.jpg"}) == ".jpg"
+    assert suggest_suffix({"cover": "http://p1.music.126.net/x.jpg?param=200y200"}) == ".jpg"
+    assert suggest_suffix({"cover": "http://x/y.png"}) == ".png"
+    assert suggest_suffix({"cover": "file:///D:/music/cover-abc.webp"}) == ".webp"
+    assert suggest_suffix({"cover": ""}) == ".jpg"
+
+
+def test_cover_original_url_strips_resize_hints():
+    from app.core.covers import original_url
+
+    assert original_url("http://a/b.jpg?param=200y200") == "http://a/b.jpg"
+    assert original_url("http://a/b.jpg?w=200&h=200&x=1") == "http://a/b.jpg?x=1"
+    # B站把尺寸写在路径后缀里
+    assert original_url("http://i0.hdslb.com/bfs/archive/x.jpg@320w_320h.webp") == \
+        "http://i0.hdslb.com/bfs/archive/x.jpg"
+    # 认不出来的后缀不动它（有些 CDN 去掉就 403）
+    assert original_url("http://a/b?id=7") == "http://a/b?id=7"
+    assert original_url("") == ""
+
+
+def test_cover_detect_suffix_by_magic_bytes():
+    from app.core.covers import detect_suffix
+
+    assert detect_suffix(b"\xff\xd8\xff\xe0\x00\x10JFIF") == ".jpg"
+    assert detect_suffix(b"\x89PNG\r\n\x1a\n\x00\x00") == ".png"
+    assert detect_suffix(b"GIF89a....") == ".gif"
+    assert detect_suffix(b"RIFF\x00\x00\x00\x00WEBPVP8 ") == ".webp"
+    assert detect_suffix(b"BM\x00\x00") == ".bmp"
+    assert detect_suffix(b"not an image") == ""
+    assert detect_suffix(b"") == ""
+
+
+def test_cover_save_from_local_file_fixes_extension():
+    """端到端：从本地 ``file://`` 封面存盘，扩展名按文件头纠正。"""
+    from app.core import covers
+
+    tmp = Path(tempfile.mkdtemp(prefix="fusion_cover_"))
+    png = _tiny_png()
+
+    src = tmp / "embedded.png"
+    src.write_bytes(png)
+    track = {"name": "测试曲", "singer": "测试歌手", "source": "local",
+             "cover": src.as_uri()}
+
+    dest = tmp / "out" / "手打的名字.jpg"     # 用户给的后缀是错的
+    path, size = covers.save_cover(track, str(dest))
+    assert size == len(png)
+    assert path.endswith(".png"), path          # 按文件头纠正
+    assert Path(path).read_bytes() == png       # 原样落盘，不重新编码
+    # 不留 *.part 残渣
+    assert not list(Path(path).parent.glob("*.part"))
+
+
+def test_cover_save_reports_missing_cover():
+    _expect_cover_error({"name": "没人匹配上的本地曲", "source": "local"}, "x.jpg")
+
+
+def test_cover_save_rejects_folder_destination():
+    tmp = Path(tempfile.mkdtemp(prefix="fusion_cover_"))
+    src = tmp / "c.png"
+    src.write_bytes(_tiny_png())
+    _expect_cover_error({"cover": src.as_uri()}, str(tmp))
+
+
+def _expect_cover_error(track, destination: str) -> None:
+    """断言存封面会以「可读懂的中文原因」失败（不引 pytest，脚本也能直接跑）。"""
+    from app.core import covers
+
+    try:
+        covers.save_cover(track, destination)
+    except covers.CoverError:
+        return
+    raise AssertionError("应当抛出 CoverError")
+
+
+def _tiny_png(width: int = 4, height: int = 4) -> bytes:
+    """造一张最小的真 PNG（纯标准库），供封面落盘测试用。"""
+    import struct
+    import zlib
+
+    raw = b"".join(b"\x00" + bytes((10, 20, 30)) * width for _ in range(height))
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 6))
+            + chunk(b"IEND", b""))
 
 
 if __name__ == "__main__":
