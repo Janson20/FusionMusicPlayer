@@ -149,7 +149,7 @@ def resolve(
             actual = candidate
             break
     if url:
-        target = _maybe_localize(track, url, cache_media=cache_media)
+        target = _maybe_localize(track, url, cache_media=cache_media, quality=actual)
         if target:
             return Resolved(
                 track=track,
@@ -171,7 +171,7 @@ def resolve(
             info, fb_url, fb_quality = result
             fb_track = Track.from_music_info(info)
             fb_track.path = ""
-            target = _maybe_localize(fb_track, fb_url, cache_media=True)
+            target = _maybe_localize(fb_track, fb_url, cache_media=True, quality=fb_quality)
             if target:
                 return Resolved(
                     track=fb_track,
@@ -214,11 +214,15 @@ def _local_quality(path: str) -> str:
     return "320k"
 
 def _maybe_localize(
-    track: Track, url: str, *, cache_media: bool
+    track: Track, url: str, *, cache_media: bool, quality: str = ""
 ) -> Optional[Tuple[str, bool]]:
     """决定直接流式播放还是先下载到本地。
 
     返回 ``(目标, 是否本地文件)``；``None`` 表示该地址不可用。
+
+    ``quality`` 是**真正取到地址的那一档**：它和曲目身份一起决定缓存键
+    （见 :func:`app.core.cache.media_identity`），所以响度分析的预取下载与
+    真正播放时的下载会命中同一份文件，而不是同一首歌各存一份。
     """
     if not url:
         return None
@@ -235,7 +239,10 @@ def _maybe_localize(
     suffix = Path(url.split("?")[0]).suffix.lower()
     if suffix not in AUDIO_EXTENSIONS:
         suffix = ".mp3"
-    local = cache.cached_media(url, suffix=suffix, headers=headers, cookies=cookies)
+    identity = cache.media_identity(track.source, track.songmid, quality)
+    local = cache.cached_media(
+        url, suffix=suffix, headers=headers, cookies=cookies, identity=identity
+    )
     if not local:
         return None
     if not validate_audio_file_header(local):

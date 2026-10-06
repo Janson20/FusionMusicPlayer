@@ -13,7 +13,7 @@ import shutil
 import tempfile
 import threading
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 from ..lazy import requests  # 延迟导入：requests 本体要 0.4 秒，见 app/lazy.py
 from .. import paths
@@ -145,12 +145,134 @@ def store_cover_bytes(key_source: str, data: bytes, mime: str = "") -> Optional[
 def cached_lyric(url: str) -> Optional[str]:
     return fetch_cached(url, "lyric", suffix=".lrc")
 
-def cached_media(url: str, suffix: str = "", headers=None, cookies=None) -> Optional[str]:
-    return fetch_cached(url, "media", suffix=suffix, headers=headers, cookies=cookies)
+def media_identity(source: str, songmid: str, quality: str = "") -> str:
+    """音频缓存的**稳定身份**：``source:songmid:quality``。
+
+    为什么不能拿播放地址当键：网易云的地址里嵌着**当前时间戳**
+    （``http://m701.music.126.net/20261006125032/…``），同一首歌每次解析出来的
+    地址都不一样 —— 按 URL 缓存等于每次都新建一份。实测（2026-10）用户的媒体
+    缓存 2.27 GB / 140 个文件里有 44 组内容完全重复：响度分析预取下载一次、
+    真正播放又下载一次，重播还会再存一份，而老键**一次都命中不了**。
+
+    拿不到身份（没有 songmid）时返回空串，调用方退回按 URL 缓存。
+    """
+    source = str(source or "").strip()
+    songmid = str(songmid or "").strip()
+    if not source or not songmid:
+        return ""
+    return f"{source}:{songmid}:{str(quality or '').strip() or 'auto'}"
+
+def cached_media(url: str, suffix: str = "", headers=None, cookies=None,
+                 identity: str = "") -> Optional[str]:
+    """下载并缓存音频文件，返回本地路径。
+
+    ``identity`` 见 :func:`media_identity`：传了它，同一首歌（同一档音质）无论
+    地址怎么变都只占一份；旧版本按 URL 存下的那份会被**改名认领**过来，不白丢。
+    不传就还是按 URL 存（拿不到曲目身份时的兜底）。
+    """
+    if not url:
+        return None
+    base = paths.media_cache_dir()
+    if not suffix:
+        suffix = Path(url.split("?")[0]).suffix or ".bin"
+    dest = base / f"{key_for(identity or url)}{suffix}"
+    if dest.exists() and dest.stat().st_size > 0:
+        touch(str(dest))
+        return str(dest)
+    if identity:
+        # 老缓存是按播放地址存的：地址恰好没变（同一个时间戳）时直接认领
+        legacy = base / f"{key_for(url)}{suffix}"
+        if legacy.exists() and legacy.stat().st_size > 0:
+            try:
+                os.replace(legacy, dest)
+                touch(str(dest))
+                return str(dest)
+            except OSError as e:
+                logger.debug("认领旧媒体缓存失败 %s: %s", legacy, e)
+    if _download(url, dest, headers, cookies):
+        return str(dest)
+    return None
 
 # ──────────────────────────────────────────────────────────────
 # 配额清理
 # ──────────────────────────────────────────────────────────────
+
+def _content_digest(path: Path, chunk: int = 1 << 20) -> Optional[str]:
+    """文件内容的 SHA-1（分块读，几 GB 的大文件也不会把内存吃掉）。"""
+    digest = hashlib.sha1()
+    try:
+        with open(path, "rb") as f:
+            while True:
+                block = f.read(chunk)
+                if not block:
+                    break
+                digest.update(block)
+    except OSError as e:
+        logger.debug("读取缓存文件失败 %s: %s", path, e)
+        return None
+    return digest.hexdigest()
+
+def _last_used(path: Path) -> float:
+    try:
+        st = path.stat()
+        return max(st.st_atime, st.st_mtime)
+    except OSError:
+        return 0.0
+
+def _size_text(size: int) -> str:
+    """字节数 → 日志里好读的一行（缓存清理都是几 KB 到几 GB，单位要跟着走）。"""
+    if size >= 1048576:
+        return f"{size / 1048576:.1f} MB"
+    if size >= 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size} B"
+
+def dedupe_media() -> Tuple[int, int]:
+    """删掉媒体缓存里**内容完全相同**的重复文件，返回 ``(删除数, 释放字节数)``。
+
+    这是收拾旧账用的：老版本按播放地址当键（见 :func:`media_identity`），
+    同一首歌会被存好几份。现在改成按曲目身份缓存之后不会再有新的重复，
+    但已经堆在盘上的那批得清一次。
+
+    只对**大小相同**的文件算内容摘要，不会去哈希整个缓存目录；保留访问时间
+    最新的那一份（它最可能是当前在用的那个键）。播放器正打开着的文件在
+    Windows 上删不掉，跳过即可。
+    """
+    base = paths.media_cache_dir()
+    if not base.exists():
+        return (0, 0)
+
+    groups: Dict[int, list] = {}
+    for path in base.rglob("*"):
+        try:
+            if not path.is_file() or path.name.endswith(".part"):
+                continue
+            groups.setdefault(path.stat().st_size, []).append(path)
+        except OSError:
+            continue
+
+    removed = 0
+    freed = 0
+    for size, files in groups.items():
+        if size <= 0 or len(files) < 2:
+            continue
+        seen: Dict[str, Path] = {}
+        for path in sorted(files, key=_last_used, reverse=True):
+            digest = _content_digest(path)
+            if digest is None:
+                continue
+            if digest not in seen:
+                seen[digest] = path
+                continue
+            try:
+                freed += path.stat().st_size
+                path.unlink()
+                removed += 1
+            except OSError as e:
+                logger.debug("删除重复缓存失败 %s: %s", path, e)
+    if removed:
+        logger.info("媒体缓存去重：删除 %d 个重复文件，释放 %s", removed, _size_text(freed))
+    return (removed, freed)
 
 def directory_size(path: Path) -> int:
     total = 0
