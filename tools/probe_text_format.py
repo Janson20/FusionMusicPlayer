@@ -43,9 +43,14 @@ Item {
 """
 
 
+#: 必须留住引用：QGuiApplication 被 Python 回收掉之后 Qt 就没了事件循环
+_QT_APP = None
+
+
 def main() -> int:
+    global _QT_APP
     target = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("probe_text_format.txt")
-    app = QGuiApplication(sys.argv[:1])
+    _QT_APP = QGuiApplication(sys.argv[:1])
     tmp = Path(tempfile.mkdtemp(prefix="fusion_tf_")) / "probe.qml"
     tmp.write_text(QML, encoding="utf-8")
     engine = QQmlApplicationEngine()

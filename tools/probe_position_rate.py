@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer, QUrl  # noqa: E402
+from PySide6.QtCore import QEventLoop, QTimer, QUrl  # noqa: E402
 from PySide6.QtGui import QGuiApplication  # noqa: E402
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer  # noqa: E402
 
@@ -36,10 +36,15 @@ def write_wav(path: Path, seconds: float, rate: int = 44100) -> None:
         w.writeframes(struct.pack("<%dh" % frames, *([0] * frames)))
 
 
+#: 必须留住引用：QGuiApplication 被 Python 回收掉之后 Qt 就没了事件循环
+_QT_APP = None
+
+
 def main() -> int:
+    global _QT_APP
     seconds = float(sys.argv[1]) if len(sys.argv) > 1 else 6.0
     target = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("probe_position_rate.txt")
-    app = QGuiApplication.instance() or QGuiApplication(sys.argv[:1])
+    _QT_APP = QGuiApplication.instance() or QGuiApplication(sys.argv[:1])
 
     tmp = Path(tempfile.mkdtemp(prefix="fusion_pos_")) / "silent.wav"
     write_wav(tmp, seconds)

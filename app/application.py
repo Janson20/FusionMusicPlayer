@@ -311,7 +311,27 @@ class Application(QObject):
         QTimer.singleShot(600, lambda: self.discover.load())
 
         self.qt_app.aboutToQuit.connect(self.shutdown)
-        return self.qt_app.exec()
+        code = self.qt_app.exec()
+        self._release_engine()
+        return code
+
+    def _release_engine(self) -> None:
+        """退出前**先**把 QML 引擎拆掉，再让 ``QGuiApplication`` 走。
+
+        两个都是 Python 持有的对象，不显式排序的话解释器退出时会以任意顺序析构。
+        实测（Qt 6.11 / Windows）：引擎晚于 ``QGuiApplication`` 销毁时会访问违例
+        （退出码 ``-1073741819`` / ``0xC0000005``），用户看到的是一句
+        「python has stopped working」——程序明明是自己退出的，却像是崩了。
+        引擎是后建的那个，就先拆它。
+        """
+        engine, self.engine = self.engine, None
+        if engine is None:
+            return
+        try:
+            engine.clearComponentCache()
+            del engine
+        except Exception as e:  # pragma: no cover - 退出路径不该再抛
+            logger.debug("释放 QML 引擎失败: %s", e)
 
     def shutdown(self) -> None:
         logger.info("正在退出，保存数据…")

@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 os.environ["FUSION_MUSIC_HOME"] = tempfile.mkdtemp(prefix="fusion_visual_")
 
-from PySide6.QtCore import QEventLoop, QObject, QTimer, QUrl  # noqa: E402
+from PySide6.QtCore import QEventLoop, QTimer, QUrl  # noqa: E402
 
 from app.application import Application  # noqa: E402
 
@@ -48,7 +48,6 @@ POSITIONS = [13470, 14340, 15000, 16600]
 class Visual(Application):
     def run(self) -> int:
         from app import paths
-        from app.core.lyrics import Lyrics
 
         out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("karaoke_shots")
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -61,7 +60,11 @@ class Visual(Application):
         self.window = roots[0]
 
         QTimer.singleShot(1200, lambda: self.shoot(out_dir))
-        return self.qt_app.exec()
+        code = self.qt_app.exec()
+        # 与 Application.run 一样先拆 QML 引擎：重写了 run() 的探针很容易漏掉这步，
+        # 漏掉就会在退出瞬间访问违例（0xC0000005），弹一句 "python has stopped working"
+        self._release_engine()
+        return code
 
     def pump(self, ms: int) -> None:
         loop = QEventLoop()
