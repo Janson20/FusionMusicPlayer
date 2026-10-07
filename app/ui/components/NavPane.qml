@@ -18,6 +18,8 @@ Rectangle {
     property int favoriteCount: 0
     property int historyCount: 0
     property int localCount: 0
+    //: 正在下载的任务数（角标显示；0 时不显示）
+    property int downloadCount: 0
 
     signal pageRequested(string pageId)
     signal loginRequested
@@ -36,7 +38,8 @@ Rectangle {
         { id: "search",   name: "搜索",     icon: FluentIcons.Search, badge: 0 },
         { id: "library",  name: "我的音乐", icon: FluentIcons.Heart,  badge: favoriteCount },
         { id: "local",    name: "本地音乐", icon: FluentIcons.Folder, badge: localCount },
-        { id: "queue",    name: "播放队列", icon: FluentIcons.List,   badge: 0 }
+        { id: "queue",    name: "播放队列", icon: FluentIcons.List,   badge: 0 },
+        { id: "downloads", name: "下载",    icon: FluentIcons.Download, badge: downloadCount }
     ]
 
     ColumnLayout {

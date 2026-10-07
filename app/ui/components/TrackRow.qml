@@ -41,16 +41,23 @@ Rectangle {
     property bool showIndex: true
     property bool showSource: true
     property bool showAlbum: true
+    // 多选：进入了多选模式时行首显示勾选框，整行点击变成「切换选中」
+    property bool selectionMode: false
+    property bool selected: false
 
     signal activated
     signal favoriteRequested
     signal artistRequested(string name)
     signal albumRequested(string albumId, string albumName)
     signal menuRequested(real globalX, real globalY)
+    //: 请求切换选中；``range`` 为真表示按 Shift 做区间选择
+    signal selectionRequested(bool range)
 
     height: 52
     radius: Theme.radiusSmall
     color: {
+        if (control.selected)
+            return Theme.accentSoft
         if (control.isCurrent)
             return Theme.accentSoft
         if (rowMouse.containsMouse)
@@ -82,10 +89,18 @@ Rectangle {
         acceptedButtons: Qt.LeftButton | Qt.RightButton
         cursorShape: Qt.PointingHandCursor
         onClicked: function (mouse) {
-            if (mouse.button === Qt.LeftButton)
-                control.activated()
-            else
+            if (mouse.button !== Qt.LeftButton) {
                 control.menuRequested(mouse.x, mouse.y)
+                return
+            }
+            // Ctrl 点击在任何时候都是「切换选中」；进入多选后单击即切换，
+            // Shift 做区间选择。没进入多选时保持原来的「单击播放」。
+            if (mouse.modifiers & Qt.ControlModifier)
+                control.selectionRequested(false)
+            else if (control.selectionMode)
+                control.selectionRequested((mouse.modifiers & Qt.ShiftModifier) !== 0)
+            else
+                control.activated()
         }
         onDoubleClicked: control.activated()
     }
@@ -95,6 +110,39 @@ Rectangle {
         anchors.leftMargin: 10
         anchors.rightMargin: 8
         spacing: 12
+
+        // ── 勾选框（多选模式）───────────────────────────
+        // 外层 Item 的宽度**始终占位**：只把里面的框藏起来，进入 / 退出多选时
+        // 整行内容不会左右跳动。
+        Item {
+            Layout.preferredWidth: 18
+            Layout.preferredHeight: 18
+            Layout.alignment: Qt.AlignVCenter
+
+            Rectangle {
+                objectName: "trackRowCheck"
+                anchors.fill: parent
+                visible: control.selectionMode
+                radius: 4
+                color: control.selected ? Theme.accent : "transparent"
+                border.width: 1
+                border.color: control.selected ? Theme.accent : Theme.textTertiary
+
+                FluIcon {
+                    anchors.centerIn: parent
+                    visible: control.selected
+                    iconSource: FluentIcons.CheckMark
+                    iconSize: 11
+                    iconColor: Theme.accentText
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: control.selectionRequested(false)
+                }
+            }
+        }
 
         // ── 序号 / 封面 ─────────────────────────────────
         Item {

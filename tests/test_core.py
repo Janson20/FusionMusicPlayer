@@ -2630,6 +2630,566 @@ def _tiny_png(width: int = 4, height: int = 4) -> bytes:
             + chunk(b"IEND", b""))
 
 
+# ──────────────────────────────────────────────────────────────
+# 歌曲下载（离线：假音源 + 假 HTTP，一条真实网络请求都不发）
+# ──────────────────────────────────────────────────────────────
+
+
+def _fake_audio(size: int = 8192) -> bytes:
+    """文件头像 mp3 的假音频（时长读不出来 → 时长校验按「未知」放行）。"""
+    return b"ID3\x03\x00\x00\x00\x00\x00\x00" + b"\x00" * max(1, size - 10)
+
+
+def _real_wav(seconds: float = 5.0, rate: int = 8000) -> bytes:
+    """标准库造一段**真** WAV：时长读得出来，用来验「试听片段」判定。"""
+    import io
+    import wave
+
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        handle.writeframes(b"\x00\x00" * int(rate * seconds))
+    return buffer.getvalue()
+
+
+class _FakeResponse:
+    def __init__(self, payload: bytes, status: int = 200, chunk_size: int = 1024, on_chunk=None):
+        self.status_code = status
+        self.headers = {"Content-Length": str(len(payload))}
+        self._payload = payload
+        self._chunk_size = chunk_size
+        self._on_chunk = on_chunk
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def iter_content(self, size: int = 1024):
+        step = self._chunk_size or size
+        for start in range(0, len(self._payload), step):
+            if self._on_chunk is not None:
+                self._on_chunk()
+            yield self._payload[start:start + step]
+
+
+class _FakeSession:
+    def __init__(self, payload: bytes, status: int = 200, on_chunk=None):
+        self.payload = payload
+        self.status = status
+        self.on_chunk = on_chunk
+        self.calls: list = []
+
+    def get(self, url, **kwargs):
+        self.calls.append(url)
+        return _FakeResponse(self.payload, status=self.status, on_chunk=self.on_chunk)
+
+
+class _DownloadFixture:
+    """替换音源接口与下载会话，让引擎在完全离线的情况下跑完整条链路。"""
+
+    def __init__(self, payload: bytes, *, qualities=("320k",), status: int = 200,
+                 lyric: str = "[00:00.00]测试歌词\n", on_chunk=None):
+        from app import sources
+        from app.core import downloader
+
+        self.sources = sources
+        self.downloader = downloader
+        self.qualities = set(qualities)
+        self.lyric = lyric
+        self.url_calls: list = []
+        self.session = _FakeSession(payload, status=status, on_chunk=on_chunk)
+        self._saved: dict = {}
+
+    def __enter__(self):
+        names = ("get_music_url_exact", "download_headers", "download_cookies", "get_lyric")
+        self._saved = {name: getattr(self.sources, name) for name in names}
+        self._saved["session"] = self.downloader.download_session
+        self.sources.get_music_url_exact = self._url
+        self.sources.download_headers = lambda source: {}
+        self.sources.download_cookies = lambda source: {}
+        self.sources.get_lyric = lambda info, source=None: self.lyric
+        self.downloader.download_session = lambda: self.session
+        return self
+
+    def __exit__(self, *exc):
+        for name, value in self._saved.items():
+            if name == "session":
+                self.downloader.download_session = value
+            else:
+                setattr(self.sources, name, value)
+        return False
+
+    def _url(self, info, quality: str = "320k", source_id=None):
+        self.url_calls.append(quality)
+        return f"https://cdn.example/{quality}.mp3" if quality in self.qualities else None
+
+
+def _download_track(**kwargs):
+    from app.core.models import Track
+
+    data = {
+        "source": "wy", "songmid": "1", "name": "达拉崩吧", "singer": "洛天依",
+        "album": "测试专辑", "interval": 0, "types": [{"type": "320k", "size": "8M"}],
+    }
+    data.update(kwargs)
+    return Track.from_dict(data)
+
+
+def _await(items, timeout: float = 15.0) -> None:
+    import time as _time
+
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        if all(item.finished for item in items):
+            return
+        _time.sleep(0.02)
+    raise AssertionError(f"下载任务没有在 {timeout}s 内结束：{[i.state for i in items]}")
+
+
+def _run_download(options, tracks=None, *, timeout: float = 15.0, fixture=None):
+    """跑完一批下载，返回 ``(manager, items)``（管理器已经收工）。"""
+    from app.core.downloader import DownloadManager
+
+    manager = DownloadManager(None, concurrency=2)
+    items = manager.enqueue(tracks or [_download_track()], options)
+    try:
+        _await(items, timeout)
+    finally:
+        manager.shutdown()
+    return manager, items
+
+
+def test_download_quality_ladder():
+    from app.core import downloader
+
+    assert downloader.quality_ladder("320k") == ["320k", "128k"]
+    assert downloader.quality_ladder("flac") == ["flac", "320k", "128k"]
+    # 请求 128k 就只试 128k：下载不该静默升级（用户可能就是要小文件）
+    assert downloader.quality_ladder("128k") == ["128k"]
+    # auto / 非法值 = 尽力取最高
+    assert downloader.quality_ladder("auto") == ["flac24bit", "flac", "320k", "128k"]
+    assert downloader.quality_ladder("乱写的") == ["flac24bit", "flac", "320k", "128k"]
+
+
+def test_download_size_parse_and_estimate():
+    from app.core import downloader
+
+    assert downloader.parse_size("3.2M") == int(3.2 * 1024 * 1024)
+    assert downloader.parse_size("800K") == 800 * 1024
+    assert downloader.parse_size(4096) == 4096
+    assert downloader.parse_size("说不清") == 0
+    assert downloader.parse_size(None) == 0
+    # 音源给了准确体积就用它（8M），而不是按码率估
+    assert downloader.estimate_size(_download_track(), "320k") == 8 * 1024 * 1024
+    # 没给体积就按码率 × 时长估
+    plain = _download_track(interval=60, types=[])
+    assert downloader.estimate_size(plain, "320k") == int(60 * 320 * 1000 / 8)
+    assert downloader.estimate_size(plain, "128k") == int(60 * 128 * 1000 / 8)
+    assert downloader.estimate_size(_download_track(interval=0, types=[]), "320k") == 0
+    # 界面用的选项：标出「该音源没有这一档」并给预计体积
+    options = downloader.quality_options(_download_track())
+    by_id = {item["id"]: item for item in options}
+    assert by_id["320k"]["available"] is True
+    assert by_id["flac"]["available"] is False
+    assert by_id["320k"]["sizeText"] == "8.0 MB"
+
+
+def test_download_naming_rules():
+    from app.core import naming
+
+    # 模板：歌手为空时不该剩下一个「 - 」
+    assert naming.format_filename("{singer} - {name}", {"singer": "", "name": "歌"}) == "歌"
+    assert naming.format_filename("{singer} - {name}", {"singer": "A", "name": ""}) == "A"
+    assert naming.format_filename("{name} ({index})", {"name": "歌", "index": 3}) == "歌 (3)"
+    assert naming.format_filename("{unknown}", {"name": "歌"}, fallback="歌") == "歌"
+    # 非法字符 / 保留设备名 / 结尾点空格
+    assert naming.sanitize_filename("a/b?c") == "a_b_c"
+    assert naming.sanitize_filename("CON") == "_CON"
+    assert naming.sanitize_filename("歌名... ") == "歌名"
+    # 曲目 → 模板取值
+    values = naming.track_values(_download_track())
+    assert values["name"] == "达拉崩吧" and values["singer"] == "洛天依"
+    assert naming.suggested_stem(_download_track()) == "洛天依 - 达拉崩吧"
+    # 扩展名：先按音质猜，落盘时再按文件头纠正
+    assert naming.quality_suffix("flac") == ".flac"
+    assert naming.quality_suffix("flac24bit") == ".flac"
+    assert naming.quality_suffix("320k") == ".mp3"
+    assert naming.correct_suffix(Path("x.mp3"), ".flac") == Path("x.flac")
+    assert naming.correct_suffix(Path("x.mp3"), "") == Path("x.mp3")
+    # 文件头嗅探（识别不出来返回空串，调用方保留原扩展名）
+    assert naming.sniff_audio_suffix(b"ID3\x03") == ".mp3"
+    assert naming.sniff_audio_suffix(b"fLaC\x00\x00") == ".flac"
+    assert naming.sniff_audio_suffix(b"OggS\x00\x02") == ".ogg"
+    assert naming.sniff_audio_suffix(b"\x00\x00\x00\x20ftypM4A ") == ".m4a"
+    assert naming.sniff_audio_suffix(b"RIFF\x00\x00\x00\x00WAVEfmt ") == ".wav"
+    assert naming.sniff_audio_suffix(b"<html>") == ""
+    assert naming.sniff_audio_suffix(b"") == ""
+
+
+def test_download_name_collision_modes():
+    from app.core import naming
+
+    tmp = Path(tempfile.mkdtemp(prefix="fusion_name_"))
+    target = tmp / "歌.mp3"
+    target.write_bytes(b"x")
+    assert naming.resolve_target(target, "skip") is None
+    assert naming.resolve_target(target, "overwrite") == target
+    renamed = naming.resolve_target(target, "rename")
+    assert renamed is not None and renamed.name == "歌 (1).mp3"
+    (tmp / "歌 (1).mp3").write_bytes(b"x")
+    assert naming.resolve_target(target, "rename").name == "歌 (2).mp3"
+    # 目标不存在时，三种策略都给原路径
+    fresh = tmp / "新歌.mp3"
+    for mode in naming.DUPLICATE_MODES:
+        assert naming.resolve_target(fresh, mode) == fresh
+
+
+def test_download_engine_writes_file_and_lyric():
+    from app.core import downloader
+    from app.core.downloader import DownloadOptions
+
+    tmp = Path(tempfile.mkdtemp(prefix="fusion_dl_"))
+    payload = _fake_audio()
+    with _DownloadFixture(payload):
+        _, items = _run_download(DownloadOptions(
+            quality="320k", directory=str(tmp), save_lyric=True, write_tags=False))
+
+    item = items[0]
+    assert item.state == downloader.STATE_DONE, (item.state, item.error)
+    target = Path(item.target)
+    assert target.name == "洛天依 - 达拉崩吧.mp3"
+    assert target.read_bytes() == payload
+    # 歌词边车：UTF-8 带 BOM（中文播放器按本地代码页读无 BOM 的会串码）
+    lyric = target.with_suffix(".lrc")
+    assert lyric.exists()
+    assert lyric.read_bytes().startswith(b"\xef\xbb\xbf")
+    assert "测试歌词" in lyric.read_text(encoding="utf-8-sig")
+    # 半成品一个都不能留
+    assert not list(tmp.glob("*.part"))
+    assert item.quality_actual == "320k"
+    assert item.progress == 1.0 and item.received > 0
+
+
+def test_download_engine_downgrades_and_reports():
+    from app.core import downloader
+    from app.core.downloader import DownloadOptions
+
+    tmp = Path(tempfile.mkdtemp(prefix="fusion_dldown_"))
+    with _DownloadFixture(_fake_audio(), qualities=("128k",)):
+        _, items = _run_download(DownloadOptions(
+            quality="320k", directory=str(tmp), save_lyric=False, write_tags=False))
+
+    item = items[0]
+    assert item.state == downloader.STATE_DONE, item.error
+    assert item.quality_actual == "128k"
+    # 降级要如实写在界面上（不能默默按 320K 报告）
+    assert "该音源没有高品质 320K" in item.warning
+    assert item.snapshot()["qualityActualLabel"] == "标准 128K"
+
+
+def test_download_engine_rejects_error_page():
+    from app.core import downloader
+    from app.core.downloader import DownloadOptions
+
+    tmp = Path(tempfile.mkdtemp(prefix="fusion_dlhtml_"))
+    with _DownloadFixture(b"<html><body>403 Forbidden</body></html>"):
+        _, items = _run_download(DownloadOptions(
+            quality="320k", directory=str(tmp), save_lyric=False, write_tags=False))
+
+    item = items[0]
+    assert item.state == downloader.STATE_FAILED
+    assert "不是音频" in item.error
+    assert list(tmp.iterdir()) == []
+
+
+def test_download_engine_rejects_preview_clip():
+    """真 WAV 但只有 5 秒，而曲目时长 200 秒 —— 必须判成试听片段。"""
+    from app.core import downloader
+    from app.core.downloader import DownloadOptions
+
+    tmp = Path(tempfile.mkdtemp(prefix="fusion_dlpre_"))
+    with _DownloadFixture(_real_wav(5.0)):
+        _, items = _run_download(
+            DownloadOptions(quality="320k", directory=str(tmp), save_lyric=False, write_tags=False),
+            [_download_track(interval=200, types=[])],
+        )
+
+    item = items[0]
+    assert item.state == downloader.STATE_FAILED
+    assert "试听片段" in item.error
+    assert list(tmp.iterdir()) == []
+
+
+def test_download_engine_fixes_suffix_by_magic_bytes():
+    """另存为写的是 .mp3，音源实际回 m4a —— 落盘要按文件头改名。"""
+    from app.core import downloader
+    from app.core.downloader import DownloadOptions
+
+    tmp = Path(tempfile.mkdtemp(prefix="fusion_dlsuf_"))
+    payload = b"\x00\x00\x00\x20ftypM4A " + b"\x00" * 4096
+    with _DownloadFixture(payload):
+        _, items = _run_download(DownloadOptions(
+            quality="320k", directory=str(tmp), save_lyric=False, write_tags=False,
+            target=str(tmp / "另存为.mp3")))
+
+    item = items[0]
+    assert item.state == downloader.STATE_DONE, item.error
+    assert Path(item.target).name == "另存为.m4a"
+    assert Path(item.target).read_bytes() == payload
+    assert not list(tmp.glob("*.part"))
+
+
+def test_download_engine_skip_existing_does_not_request():
+    from app.core import downloader
+    from app.core.downloader import DownloadOptions
+
+    tmp = Path(tempfile.mkdtemp(prefix="fusion_dlskip_"))
+    (tmp / "洛天依 - 达拉崩吧.mp3").write_bytes(b"already here")
+    with _DownloadFixture(_fake_audio()) as fixture:
+        _, items = _run_download(DownloadOptions(
+            quality="320k", directory=str(tmp), save_lyric=False, write_tags=False,
+            duplicate="skip"))
+
+    item = items[0]
+    assert item.state == downloader.STATE_SKIPPED
+    # 「跳过」就该一个请求都不发：连取地址都不必
+    assert fixture.url_calls == []
+    assert (tmp / "洛天依 - 达拉崩吧.mp3").read_bytes() == b"already here"
+
+
+def test_download_engine_rename_existing_keeps_both():
+    from app.core import downloader
+    from app.core.downloader import DownloadOptions
+
+    tmp = Path(tempfile.mkdtemp(prefix="fusion_dlren_"))
+    (tmp / "洛天依 - 达拉崩吧.mp3").write_bytes(b"old")
+    payload = _fake_audio()
+    with _DownloadFixture(payload):
+        _, items = _run_download(DownloadOptions(
+            quality="320k", directory=str(tmp), save_lyric=False, write_tags=False,
+            duplicate="rename"))
+
+    item = items[0]
+    assert item.state == downloader.STATE_DONE, item.error
+    assert Path(item.target).name == "洛天依 - 达拉崩吧 (1).mp3"
+    assert (tmp / "洛天依 - 达拉崩吧.mp3").read_bytes() == b"old"
+
+
+def test_download_engine_cancel_removes_partial():
+    import time as _time
+
+    from app.core import downloader
+    from app.core.downloader import DownloadManager, DownloadOptions
+
+    tmp = Path(tempfile.mkdtemp(prefix="fusion_dlcancel_"))
+    holder: dict = {}
+
+    def on_chunk():
+        item = holder.get("item")
+        if item is not None and item.received > 0:
+            item.request_cancel()
+
+    with _DownloadFixture(_fake_audio(1024 * 512), on_chunk=on_chunk):
+        manager = DownloadManager(None, concurrency=1)
+        try:
+            items = manager.enqueue(
+                [_download_track()],
+                DownloadOptions(quality="320k", directory=str(tmp),
+                                save_lyric=False, write_tags=False),
+            )
+            holder["item"] = items[0]
+            deadline = _time.monotonic() + 10
+            while _time.monotonic() < deadline and not items[0].finished:
+                _time.sleep(0.01)
+        finally:
+            manager.shutdown()
+
+    assert items[0].state == downloader.STATE_CANCELED
+    assert list(tmp.iterdir()) == []
+
+
+def test_download_engine_guards_local_and_unknown_tracks():
+    from app.core import downloader
+    from app.core.downloader import DownloadOptions
+
+    tmp = Path(tempfile.mkdtemp(prefix="fusion_dlguard_"))
+    with _DownloadFixture(_fake_audio()):
+        _, items = _run_download(
+            DownloadOptions(quality="320k", directory=str(tmp), save_lyric=False, write_tags=False),
+            [_download_track(source="local", songmid="D:/x/a.mp3")],
+        )
+    assert items[0].state == downloader.STATE_FAILED
+    assert "本地曲目" in items[0].error
+
+
+def test_download_engine_reports_unwritable_directory():
+    from app.core import downloader
+    from app.core.downloader import DownloadOptions
+
+    tmp = Path(tempfile.mkdtemp(prefix="fusion_dldir_"))
+    blocker = tmp / "not-a-dir"
+    blocker.write_bytes(b"file")
+    with _DownloadFixture(_fake_audio()):
+        _, items = _run_download(DownloadOptions(
+            quality="320k", directory=str(blocker), save_lyric=False, write_tags=False))
+    assert items[0].state == downloader.STATE_FAILED
+    assert "下载目录" in items[0].error
+
+
+def test_download_options_from_config():
+    from app.config import Config
+    from app.core import downloader
+
+    tmp = Path(tempfile.mkdtemp(prefix="fusion_dlcfg_"))
+    config = Config(tmp / "config.json")
+    options = downloader.DownloadOptions.from_config(config)
+    assert options.quality == "320k"
+    assert options.write_tags and options.save_lyric and options.embed_cover
+    assert options.duplicate == "rename"
+    assert options.add_to_library is False
+    assert options.directory.endswith("downloads")
+    # 覆盖项生效，None 表示「这次不改」
+    merged = downloader.DownloadOptions.from_config(
+        config, quality="flac", directory=str(tmp), write_tags=None)
+    assert merged.quality == "flac" and merged.directory == str(tmp)
+    assert merged.write_tags is True
+    # 非法同名策略回落到「自动加序号」，而不是把文件覆盖掉
+    assert downloader.DownloadOptions(duplicate="乱写").duplicate == "rename"
+    # 配置里的默认值真的被读到了
+    config.set("download.quality", "flac")
+    config.set("download.add_to_library", True)
+    assert downloader.DownloadOptions.from_config(config).quality == "flac"
+    assert downloader.DownloadOptions.from_config(config).add_to_library is True
+
+
+def test_download_writer_tags_lyric_and_cover():
+    from app.core import download_writer
+    from app.core.models import Track
+
+    tmp = Path(tempfile.mkdtemp(prefix="fusion_tags_"))
+    path = tmp / "song.wav"
+    path.write_bytes(_real_wav(1.0))
+    track = Track.from_dict({
+        "source": "wy", "songmid": "1", "name": "达拉崩吧", "singer": "洛天依",
+        "album": "测试专辑", "publish_time": 1600000000000,
+    })
+    cover = _tiny_png()
+    download_writer.embed_tags(str(path), track, cover=(cover, ".png"), track_number=2)
+
+    from mutagen import File as MutagenFile
+
+    # WAVE 用的是 ID3 标签：easy 包装不管它，直接读帧（这正是当初写错的地方）
+    raw = MutagenFile(str(path))
+    assert raw is not None
+    assert raw.tags["TIT2"].text[0] == "达拉崩吧"
+    assert raw.tags["TPE1"].text[0] == "洛天依"
+    assert raw.tags["TALB"].text[0] == "测试专辑"
+    assert str(raw.tags["TDRC"].text[0]) == "2020"   # ID3 的 TDRC 是时间戳对象
+    assert raw.tags["TRCK"].text[0] == "2"
+    pictures = raw.tags.getall("APIC")
+    assert pictures and pictures[0].data == cover
+
+    # 歌词边车：带 BOM，落盘后能按 utf-8-sig 读回来
+    lyric = download_writer.write_lyric(str(path), "[00:01.00]你好")
+    assert Path(lyric).name == "song.lrc"
+    assert Path(lyric).read_text(encoding="utf-8-sig").startswith("[00:01.00]")
+    try:
+        download_writer.write_lyric(str(path), "   ")
+    except download_writer.WriteError:
+        pass
+    else:
+        raise AssertionError("空歌词应当抛 WriteError")
+
+    # 年份换算：秒级时间戳也要认（不能把 2024 算成 1970）
+    assert download_writer.publish_year({"publish_time": 1700000000}) == "2023"
+    assert download_writer.publish_year({"publish_time": 0}) == ""
+    assert download_writer.publish_year({}) == ""
+
+
+def test_download_snapshot_and_model_roles_agree():
+    """快照与列表模型的角色必须对得上。
+
+    QML 侧是按**角色名**读的（``required property string stateText`` 这种），
+    少一个键、或者键名写错，界面上就是一片 undefined —— 而 Python 这边毫无动静。
+    """
+    from app.bridges.download import _ROLE_KEYS
+    from app.core.downloader import DownloadItem, DownloadOptions
+
+    item = DownloadItem(1, _download_track(), DownloadOptions(quality="flac", add_to_library=True),
+                        index=3)
+    snap = item.snapshot()
+    for key in _ROLE_KEYS:
+        assert key in snap, f"快照缺少界面要读的键：{key}"
+    # 逐次下载的选项也要带出来（界面按它决定要不要入库）
+    assert snap["addToLibrary"] is True
+    assert snap["qualityLabel"] == "无损 FLAC"
+    assert snap["stateText"] == "排队中" and snap["active"] is True and snap["finished"] is False
+    # 降级标记：请求无损、实际拿到 320K
+    item.quality_actual = "320k"
+    degraded = item.snapshot()
+    assert degraded["degraded"] is True
+    assert degraded["qualityActualLabel"] == "高品质 320K"
+    # 请求 128K 也拿到了 128K：不算降级
+    plain = DownloadItem(2, _download_track(), DownloadOptions(quality="128k"))
+    plain.quality_actual = "128k"
+    assert plain.snapshot()["degraded"] is False
+
+
+def test_download_embedded_cover_is_capped():
+    """内嵌封面要压到合理体积：实测网易云有些封面是 7 MB 的 PNG。
+
+    小图原样不动，大图缩到最长边上限并转 JPEG；压不小就退回原图（宁可不压，
+    也不能因为封面把下载搞失败）。这里用小阈值 + 真 QImage 走同一条代码路径。
+    """
+    from PySide6.QtCore import QBuffer, QByteArray
+    from PySide6.QtGui import QImage
+
+    from app.core import download_writer
+
+    image = QImage(600, 600, QImage.Format.Format_RGB32)
+    image.fill(0x3366CC)
+    buffer = QBuffer()
+    buffer.open(QBuffer.OpenModeFlag.WriteOnly)
+    image.save(buffer, "PNG")
+    png = bytes(buffer.data())
+
+    # 没超过阈值：原样返回（不动用户的图）
+    same = download_writer.prepare_embedded_cover(png, ".png", max_bytes=len(png) + 10)
+    assert same == (png, ".png"), same[1]
+
+    # 超过阈值：缩到上限并转 JPEG
+    packed, suffix = download_writer.prepare_embedded_cover(
+        png, ".png", max_bytes=1, max_edge=100)
+    assert suffix == ".jpg", suffix
+    assert len(packed) < len(png), (len(packed), len(png))
+    decoded = QImage.fromData(QByteArray(packed))
+    assert not decoded.isNull()
+    assert max(decoded.width(), decoded.height()) <= 100, (decoded.width(), decoded.height())
+
+    # 认不出来的数据：原样返回，绝不抛
+    assert download_writer.prepare_embedded_cover(b"not an image", ".jpg", max_bytes=1) \
+        == (b"not an image", ".jpg")
+    assert download_writer.prepare_embedded_cover(b"", ".jpg") == (b"", ".jpg")
+
+
+def test_download_cleanup_stale_parts():
+    from app.core import downloader
+
+    tmp = Path(tempfile.mkdtemp(prefix="fusion_parts_"))
+    (tmp / "a.mp3.part").write_bytes(b"x")
+    (tmp / "b.flac.part").write_bytes(b"x")
+    (tmp / "keep.mp3").write_bytes(b"x")
+    assert downloader.cleanup_stale_parts(str(tmp)) == 2
+    assert [p.name for p in tmp.iterdir()] == ["keep.mp3"]
+    # 目录不存在 / 路径非法都不该炸
+    assert downloader.cleanup_stale_parts(str(tmp / "nope")) == 0
+    assert downloader.cleanup_stale_parts("") == 0
+
+
 if __name__ == "__main__":
     import traceback
 

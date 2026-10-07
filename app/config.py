@@ -116,6 +116,18 @@ DEFAULTS: Dict[str, Any] = {
         # 「保存封面」的另存为对话框上次用过的目录（空 = 系统图片目录）
         "cover_dir": "",
     },
+    # ── 歌曲下载 ────────────────────────────────────────────
+    # 目录用 storage.download_dir（不在这里再开一个键，同一个东西只能有一处真相）
+    "download": {
+        "quality": "320k",          # auto | flac24bit | flac | 320k | 128k
+        "filename_template": "{singer} - {name}",
+        "write_tags": True,         # 写标题 / 歌手 / 专辑 / 年份标签（需要 mutagen）
+        "embed_cover": True,        # 写标签时顺便把封面嵌进去
+        "save_lyric": True,         # 同目录同名 .lrc（UTF-8 带 BOM）
+        "duplicate": "rename",      # rename 自动加序号 | skip 跳过 | overwrite 覆盖
+        "add_to_library": False,    # 下完自动加进「本地音乐」曲库
+        "concurrency": 2,           # 同时下载几首（1-6，太高会被音源风控）
+    },
     # ── 歌词 / 桌面歌词 ─────────────────────────────────────
     "lyrics": {
         "show_translation": True,

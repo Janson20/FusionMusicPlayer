@@ -401,6 +401,11 @@ class TrackListModel(QAbstractListModel):
         """整个列表的字典数组（QML 侧用于「播放全部」等批量操作）。"""
         return [t.to_dict() for t in self._tracks]
 
+    @Slot(result="QVariantList")
+    def uids(self):  # noqa: N802
+        """整个列表的 uid 数组（多选的「全选」与失效清理用，比 allItems 轻得多）。"""
+        return [t.uid for t in self._tracks]
+
     @Slot(int, result="QVariantList")
     def itemsFrom(self, row: int):  # noqa: N802
         """从指定行开始的字典数组。"""

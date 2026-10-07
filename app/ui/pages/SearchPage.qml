@@ -427,6 +427,7 @@ Item {
                 anchors.margins: 6
                 model: search.model
                 busy: search.loading
+                selectable: true
                 emptyIcon: FluentIcons.Search
                 emptyTitle: search.keyword === "" ? "搜索你喜欢的音乐" : ("没有找到「" + search.keyword + "」")
                 emptyDescription: search.keyword === ""
@@ -440,6 +441,9 @@ Item {
                 onRequestPlayNext: function (track) { player.playNextTrack(track) }
                 onRequestAppend: function (track) { player.appendToQueue(track) }
                 onRequestFavorite: function (track) { library.toggleFavorite(track) }
+                onRequestPlayMany: function (tracks) { player.playTrackInList(tracks, 0) }
+                onRequestAppendMany: function (tracks) { player.extendQueue(tracks) }
+                onRequestFavoriteMany: function (tracks) { library.addManyToFavorites(tracks) }
             }
         }
 

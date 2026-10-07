@@ -18,6 +18,7 @@ from .bridges.album import AlbumController
 from .bridges.app import AppController
 from .bridges.artist import ArtistController
 from .bridges.discover import DiscoverController
+from .bridges.download import DownloadController
 from .bridges.library import LibraryController
 from .bridges.roam import RoamController
 from .bridges.search import SearchController
@@ -128,6 +129,8 @@ class Application(QObject):
         self.wiki.watch_player()
         self.settings = SettingsController(self.config, self.loudness)
         self.app = AppController(self.config)
+        # 歌曲下载：右键另存为 + 批量下载（引擎在工作线程里跑，见 core/downloader.py）
+        self.download = DownloadController(self.config)
         # 自动更新：只负责检查与提示，真正的替换动作要用户点（见 bridges/update.py）
         self.updater = UpdateController(self.config)
 
@@ -150,6 +153,9 @@ class Application(QObject):
         ctx.setContextProperty("wiki", self.wiki)
         ctx.setContextProperty("settings", self.settings)
         ctx.setContextProperty("app", self.app)
+        # 名字是 download（不要写成 downloads）：QML 侧 context 属性名与页面文件无关，
+        # 短名字在对话框与页面里引用起来更省事
+        ctx.setContextProperty("download", self.download)
         # 名字是 updater，**不要**改成 update：QML 里 `update` 会被窗口类型上
         # 的同名方法遮住（实测 SettingsWindow.qml 里 `update.xxx` 全是 undefined，
         # 而同一个 context 属性在别处读得到），改回去就会踩这个坑。
@@ -179,6 +185,14 @@ class Application(QObject):
         self.album.errorOccurred.connect(self.app.warn)
         self.roam.errorOccurred.connect(self.app.warn)
         self.roam.message.connect(self.app.info)
+        # 歌曲下载：进度与历史在「下载」页里看，通知只报结果（批量时尤其需要）
+        self.download.message.connect(self.app.info)
+        self.download.errorOccurred.connect(self.app.error)
+        self.download.summary.connect(self.app.info)
+        # 「完成后加入本地曲库」：读完标签加进本地索引（回调在主线程）
+        self.download.fileCompleted.connect(self._on_download_completed)
+        # 下载页上的「播放」：把刚下好的文件交给播放引擎
+        self.download.playRequested.connect(self.player.playTrack)
         self.settings.message.connect(self.app.info)
         self.settings.errorOccurred.connect(self.app.error)
         # 音量均衡：分析线程只统计、不打扰（失败也只在日志里）
@@ -214,6 +228,18 @@ class Application(QObject):
     def _on_remote_playlists(self) -> None:
         # 网易云歌单展示在「我的音乐」的左栏里
         self.library_bridge.setRemotePlaylists(self.account.remotePlaylists)
+
+    @Slot(str, object)
+    def _on_download_completed(self, path: str, snapshot) -> None:
+        """下载完成 → 加进本地曲库。
+
+        「要不要入库」由下载控制器按**这一次下载的选项**判断（对话框里能改），
+        这里只负责入库这一件事。
+        """
+        try:
+            self.library_bridge.addLocalFile(str(path or ""))
+        except Exception as e:  # pragma: no cover - 入库失败不影响下载结果
+            logger.debug("下载完成后加入曲库失败: %s", e)
 
     @Slot(object)
     def _on_qml_warning(self, warnings) -> None:
@@ -335,6 +361,11 @@ class Application(QObject):
 
     def shutdown(self) -> None:
         logger.info("正在退出，保存数据…")
+        try:
+            # 先停下载：正在写的任务要取消掉并删掉 .part，否则会留下半截文件
+            self.download.shutdown()
+        except Exception as e:
+            logger.debug("停止下载任务失败: %s", e)
         try:
             self.loudness.shutdown()
         except Exception as e:

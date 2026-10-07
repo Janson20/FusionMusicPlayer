@@ -117,6 +117,7 @@ Item {
                 model: roam.model
                 busy: roam.loading
                 showCover: true
+                selectable: true
                 emptyIcon: FluentIcons.MapCompassTop
                 emptyTitle: roam.loading ? "正在为你挑选…" : "还没有推荐"
                 emptyDescription: roam.loading ? "" : "点「换一批」让漫游开始挑歌"
@@ -127,6 +128,9 @@ Item {
                 onRequestPlayNext: function (track) { player.playNextTrack(track) }
                 onRequestAppend: function (track) { player.appendToQueue(track) }
                 onRequestFavorite: function (track) { library.toggleFavorite(track) }
+                onRequestPlayMany: function (tracks) { player.playTrackInList(tracks, 0) }
+                onRequestAppendMany: function (tracks) { player.extendQueue(tracks) }
+                onRequestFavoriteMany: function (tracks) { library.addManyToFavorites(tracks) }
             }
         }
 

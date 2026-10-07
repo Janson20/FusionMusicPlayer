@@ -1217,6 +1217,198 @@ FluWindow {
                             text: "打开缓存目录"
                             onClicked: settings.openPath(settings.cacheDir)
                         }
+                        FluButton {
+                            text: "打开下载目录"
+                            onClicked: settings.openPath(settings.downloadDir)
+                        }
+                    }
+
+                    // ── 歌曲下载 ─────────────────────────────
+                    SectionHeader {
+                        Layout.fillWidth: true
+                        title: "下载"
+                        subtitle: "右键曲目「下载」= 单曲另存为；选中多首后点「下载…」= 批量"
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 10
+
+                        FluText {
+                            Layout.alignment: Qt.AlignVCenter
+                            Layout.preferredWidth: 74
+                            text: "下载目录"
+                            font.pixelSize: 12
+                            color: Theme.textSecondary
+                        }
+                        FluText {
+                            objectName: "downloadDirText"
+                            Layout.fillWidth: true
+                            Layout.alignment: Qt.AlignVCenter
+                            text: settings.downloadDir
+                            font.pixelSize: 12
+                            color: Theme.textPrimary
+                            elide: Text.ElideMiddle
+                        }
+                        FluButton {
+                            objectName: "downloadDirPickButton"
+                            text: "选择…"
+                            onClicked: downloadFolderDialog.open()
+                        }
+                        FluButton {
+                            objectName: "downloadDirResetButton"
+                            text: "恢复默认"
+                            onClicked: settings.resetDownloadDir()
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 10
+
+                        FluText {
+                            Layout.alignment: Qt.AlignVCenter
+                            Layout.preferredWidth: 74
+                            text: "默认音质"
+                            font.pixelSize: 12
+                            color: Theme.textSecondary
+                        }
+                        FluComboBox {
+                            objectName: "downloadQualityBox"
+                            Layout.preferredWidth: 260
+                            model: {
+                                var names = []
+                                var options = settings.qualityOptions
+                                for (var i = 0; i < options.length; i++)
+                                    names.push(options[i].name)
+                                return names
+                            }
+                            currentIndex: {
+                                var options = settings.qualityOptions
+                                for (var i = 0; i < options.length; i++)
+                                    if (options[i].id === settings.defaultQuality) return i
+                                return 0
+                            }
+                            onActivated: function (index) {
+                                settings.set("download.quality",
+                                             settings.qualityOptions[index].id)
+                            }
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 10
+
+                        FluText {
+                            Layout.alignment: Qt.AlignVCenter
+                            Layout.preferredWidth: 74
+                            text: "文件名"
+                            font.pixelSize: 12
+                            color: Theme.textSecondary
+                        }
+                        FluTextBox {
+                            objectName: "downloadTemplateBox"
+                            Layout.preferredWidth: 300
+                            placeholderText: "{singer} - {name}"
+                            text: settings.filenameTemplate
+                            onCommit: settings.set("download.filename_template", text)
+                        }
+                        FluText {
+                            Layout.fillWidth: true
+                            Layout.alignment: Qt.AlignVCenter
+                            text: "可用：{singer} {name} {album} {source} {index}（回车生效）"
+                            font.pixelSize: 11
+                            color: Theme.textTertiary
+                        }
+                    }
+
+                    SettingSwitch {
+                        objectName: "downloadSaveLyricSwitch"
+                        label: "保存歌词"
+                        description: "与音频同名的 .lrc（UTF-8 带 BOM，中文播放器不乱码）"
+                        checked: settings.downloadSaveLyric
+                        onToggled: function (value) { settings.setBool("download.save_lyric", value) }
+                    }
+                    SettingSwitch {
+                        objectName: "downloadWriteTagsSwitch"
+                        label: "写入标签"
+                        description: "标题 / 歌手 / 专辑 / 年份（需要 mutagen；未安装时自动跳过）"
+                        checked: settings.downloadWriteTags
+                        onToggled: function (value) { settings.setBool("download.write_tags", value) }
+                    }
+                    SettingSwitch {
+                        objectName: "downloadEmbedCoverSwitch"
+                        label: "内嵌封面"
+                        description: "写标签时把封面原图嵌进文件（依赖上面的「写入标签」）"
+                        checked: settings.downloadEmbedCover
+                        enabledControl: settings.downloadWriteTags
+                        onToggled: function (value) { settings.setBool("download.embed_cover", value) }
+                    }
+                    SettingSwitch {
+                        objectName: "downloadAddToLibrarySwitch"
+                        label: "完成后加入本地音乐"
+                        description: "下载完自动读标签入曲库；播放列表里立刻能看到"
+                        checked: settings.downloadAddToLibrary
+                        onToggled: function (value) { settings.setBool("download.add_to_library", value) }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 12
+
+                        FluText {
+                            Layout.alignment: Qt.AlignVCenter
+                            text: "同名文件"
+                            font.pixelSize: 12
+                            color: Theme.textSecondary
+                        }
+                        FluComboBox {
+                            objectName: "downloadDuplicateBox"
+                            Layout.preferredWidth: 220
+                            model: {
+                                var names = []
+                                var options = settings.downloadDuplicateOptions
+                                for (var i = 0; i < options.length; i++)
+                                    names.push(options[i].name)
+                                return names
+                            }
+                            currentIndex: {
+                                var options = settings.downloadDuplicateOptions
+                                for (var i = 0; i < options.length; i++)
+                                    if (options[i].id === settings.downloadDuplicate) return i
+                                return 0
+                            }
+                            onActivated: function (index) {
+                                settings.set("download.duplicate",
+                                             settings.downloadDuplicateOptions[index].id)
+                            }
+                        }
+
+                        FluText {
+                            Layout.alignment: Qt.AlignVCenter
+                            Layout.leftMargin: 12
+                            text: "同时下载"
+                            font.pixelSize: 12
+                            color: Theme.textSecondary
+                        }
+                        FluSlider {
+                            objectName: "downloadConcurrencySlider"
+                            Layout.preferredWidth: 160
+                            from: 1
+                            to: 6
+                            stepSize: 1
+                            value: settings.downloadConcurrency
+                            tooltipEnabled: true
+                            text: Math.round(value) + " 首"
+                            onMoved: settings.setInt("download.concurrency", Math.round(value))
+                        }
+                        FluText {
+                            Layout.alignment: Qt.AlignVCenter
+                            text: settings.downloadConcurrency + " 首（1-6，太高会被音源限流）"
+                            font.pixelSize: 11
+                            color: Theme.textTertiary
+                        }
                     }
                 }
 
@@ -1454,6 +1646,17 @@ FluWindow {
         nameFilters: ["图片 (*.jpg *.jpeg *.png *.webp *.bmp *.gif *.tif *.tiff *.svg)",
                       "所有文件 (*)"]
         onAccepted: settings.applyBackgroundImage(selectedFile.toString())
+    }
+
+    // 选下载目录。校验与落配置都在 Python 侧（settings.setDownloadDir）：
+    // 目录建不出来时要给出能读懂的原因，而不是默默存下一个不存在的路径。
+    FolderDialog {
+        id: downloadFolderDialog
+        objectName: "downloadFolderDialog"
+        title: "选择下载目录"
+        acceptLabel: "选择"
+        rejectLabel: "取消"
+        onAccepted: settings.setDownloadDir(selectedFolder.toString())
     }
 
     FluContentDialog {

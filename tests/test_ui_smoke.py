@@ -1084,6 +1084,8 @@ class UiProbe(Application):
         self.guard(self.step_updater)
         self.guard(self.step_many_artists)
 
+        self.guard(self.step_download)
+
         self.guard(self.step_tray)
 
         self.guard(self.step_signal_params)
@@ -1460,6 +1462,11 @@ class UiProbe(Application):
         wav = Path(tempfile.mkdtemp(prefix="fusion_session_audio_")) / "probe.wav"
         write_silent_wav(wav, seconds=3)
 
+        # 先把上一步（漫游）可能还在放的东西停掉：媒体是异步起来的，
+        # 留着它会让下面「恢复出来不会自己出声」变成一条靠运气的断言
+        self.player.stop()
+        self.pump(300)
+
         queue = PlayQueue()
         queue.set_tracks([
             Track(source="local", name="会话曲目 A", path=str(wav), interval=3),
@@ -1472,7 +1479,8 @@ class UiProbe(Application):
         check("当前曲目是上次那首", self.current_track() == "会话曲目 B",
               f"{self.current_track()!r}")
         check("进度接着上次", self.player.position == 1500, f"{self.player.position}")
-        check("恢复出来不会自己出声", not self.player.playing and not self.player.paused)
+        check("恢复出来不会自己出声", not self.player.playing and not self.player.paused,
+              f"playing={self.player.playing} paused={self.player.paused}")
 
         # 播放栏上的歌名是 QML 侧读 player.title 绑出来的，这里读的是真渲染值
         title = self.item("playerBarTitle")
@@ -1855,6 +1863,189 @@ class UiProbe(Application):
         self.eval_js("app.setExpanded(false)")
         self.eval_js("app.go('discover')")
         self.pump(400)
+
+    # ── 歌曲下载 ────────────────────────────────────────────
+    def step_download(self):
+        """下载：右键入口、多选与全选、批量对话框、真落盘与下载页。
+
+        整条链路**不联网**：音源取址与 HTTP 会话都换成假的（复用
+        ``tests/test_core.py`` 里的那套 fixture）。这样验的才是真行为 ——
+        文件真的落盘、任务在下载页里看得见、角标跟着任务数走；
+        光断言「函数被调用了」是拦不住「界面根本没接上」的。
+        """
+        import sys as _sys
+        import tempfile
+
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from test_core import _DownloadFixture, _download_track, _fake_audio
+
+        tmp = Path(tempfile.mkdtemp(prefix="fusion_dlsmoke_"))
+        # 下载目录先指到临时目录：默认值是程序目录下的 downloads，不该被冒烟测试写脏
+        self.settings.setDownloadDir(tmp.as_uri())
+        self.pump(300)
+        check("设置里改下载目录立刻生效", Path(self.settings.downloadDir) == tmp,
+              self.settings.downloadDir)
+
+        # ── 设置页里的下载分区（配置项写了但界面没入口 = 没这个功能）
+        win = self.find(SETTINGS_TITLE)
+        if win is not None:
+            previous = win.property("section")
+            win.setProperty("section", 6)      # 存储
+            self.pump(600)
+            for name, label in (
+                ("downloadDirPickButton", "下载目录选择"),
+                ("downloadDirResetButton", "下载目录恢复默认"),
+                ("downloadQualityBox", "默认音质"),
+                ("downloadTemplateBox", "文件名模板"),
+                ("downloadDuplicateBox", "同名处理"),
+                ("downloadConcurrencySlider", "并发数"),
+                ("downloadWriteTagsSwitch", "写入标签"),
+                ("downloadEmbedCoverSwitch", "内嵌封面"),
+                ("downloadSaveLyricSwitch", "保存歌词"),
+                ("downloadAddToLibrarySwitch", "完成后加入曲库"),
+            ):
+                check(f"设置 → 存储里有{label}",
+                      win.findChild(QObject, name) is not None)
+            win.setProperty("section", previous if previous is not None else 0)
+            self.pump(300)
+
+        # ── 多选与全选 ──────────────────────────────────────
+        self.eval_js("app.go('search')")
+        self.pump(700)
+        self.inject_search_rows()
+        self.pump(500)
+
+        view = self.track_list()
+        check("找得到曲目列表", view is not None)
+        if view is None:
+            return
+        check("曲目列表开了多选", bool(view.property("selectable")))
+        buttons = [b for b in self.find_items("selectionSelectAllButton") if b.isVisible()]
+        check("列表顶部有「全选」按钮", len(buttons) == 1, f"{len(buttons)} 个")
+        if buttons:
+            self.click_item(buttons[0])
+        check("点「全选」后两首都被选中", int(view.property("selectedCount")) == 2,
+              f"selectedCount={view.property('selectedCount')}")
+        check("进入多选模式（行首出现勾选框）",
+              any(c.isVisible() for c in self.find_items("trackRowCheck")))
+        count_text = [t for t in self.find_items("selectionCountText") if t.isVisible()]
+        check("工具条显示已选数量",
+              bool(count_text) and str(count_text[0].property("text")) == "已选 2 首",
+              f"{[t.property('text') for t in count_text]}")
+
+        # ── 右键菜单入口 ────────────────────────────────────
+        # 按列表自己找：每个曲目列表都带一套菜单 / 对话框，窗口级 findChild
+        # 拿到的是**先加载的那个页面**的实例（这里踩过：断言的是发现页的对话框，
+        # 而弹出来的是搜索页的，于是「没弹出来」假失败）
+        check("右键菜单里有「下载」子菜单",
+              view.findChild(QObject, "trackMenuDownload") is not None)
+        check("右键菜单里有「下载选中的 N 首…」",
+              view.findChild(QObject, "trackMenuDownloadSelection") is not None)
+
+        # ── 批量下载对话框 ──────────────────────────────────
+        dialog = view.findChild(QObject, "downloadDialog")
+        check("批量下载对话框已随列表创建", dialog is not None)
+        picked = self.qml_enum(view, "selectedTrackList().length")
+        check("选择集能取出完整曲目", int(picked or 0) == 2, f"{picked}")
+        download_buttons = [b for b in self.find_items("selectionDownloadButton") if b.isVisible()]
+        check("工具条上有「下载…」按钮", len(download_buttons) == 1, f"{len(download_buttons)} 个")
+        if download_buttons:
+            self.click_item(download_buttons[0])
+        else:
+            self.qml_enum(view, "openBatchDialog(selectedTrackList())")
+        self.pump(700)
+        check("对话框弹出来了",
+              dialog is not None and bool(dialog.property("visible")),
+              f"{None if dialog is None else dialog.property('visible')}")
+        if dialog is None:
+            return
+        check("对话框按设置带上默认音质", str(dialog.property("quality")) == "320k",
+              repr(dialog.property("quality")))
+        check("对话框带上了目标目录",
+              str(dialog.property("directory")) == str(tmp), repr(dialog.property("directory")))
+        summary = dialog.property("summary")
+        if hasattr(summary, "toVariant"):
+            summary = summary.toVariant()
+        check("汇总算的是这批曲目", int((summary or {}).get("count", 0)) == 2, f"{summary}")
+
+        options = self.download.estimateOptions([_download_track(interval=200, types=[]).to_dict()])
+        check("每一档音质都有预计体积", len(options) == 5 and options[0]["id"] == "auto",
+              f"{[o['id'] for o in options]}")
+        check("无损档的预计体积比 320K 大",
+              int(options[2]["size"]) > int(options[3]["size"]) > 0,
+              f"{options[2]['sizeText']} / {options[3]['sizeText']}")
+
+        # ── 真下一批（假音源 + 假 HTTP）─────────────────────
+        payload = _fake_audio()
+        fixture = _DownloadFixture(payload)
+        fixture.__enter__()
+        try:
+            self.qml_enum(dialog, "startDownload()")
+            self.pump(400)
+            check("下载任务进了队列（导航角标看得到）",
+                  int(self.nav_download_badge()) == 2, f"badge={self.nav_download_badge()}")
+            done = self.wait_until(lambda: self.download.counts["done"] == 2, timeout_ms=10000)
+            check("两首都下完了", done, f"counts={self.download.counts}")
+            landed = sorted(p.name for p in tmp.glob("*.mp3"))
+            check("文件按「歌手 - 歌名」落盘",
+                  landed == ["WOVOP、洛天依 - 测试歌曲 A.mp3", "洛天依 - 测试歌曲 B.mp3"],
+                  f"{landed}")
+            check("落盘内容与音源一致",
+                  (tmp / "WOVOP、洛天依 - 测试歌曲 A.mp3").read_bytes() == payload)
+
+            # ── 右键另存为：指定完整路径 ────────────────────
+            # 故意写成 .mp3，落盘时应当按文件头改成 .m4a
+            target = tmp / "另存为的名字.mp3"
+            m4a = b"\x00\x00\x00\x20ftypM4A " + b"\x00" * 4096
+            fixture.session.payload = m4a
+            started = self.download.saveAs(_download_track().to_dict(), "320k", target.as_uri())
+            check("另存为任务已入队", bool(started))
+            done = self.wait_until(lambda: self.download.counts["done"] == 3, timeout_ms=10000)
+            check("另存为也下完了", done, f"counts={self.download.counts}")
+            check("扩展名按文件头纠正成 m4a",
+                  (tmp / "另存为的名字.m4a").exists() and not target.exists(),
+                  f"{sorted(p.name for p in tmp.iterdir())}")
+        finally:
+            fixture.__exit__(None, None, None)
+
+        # ── 下载页 ──────────────────────────────────────────
+        self.eval_js("app.go('downloads')")
+        self.pump(800)
+        check("下载页渲染出来了", self.item("downloadsPage") is not None)
+        check("下载页里有三条任务", self.download.tasks.count == 3,
+              f"{self.download.tasks.count}")
+        rows = self.find_items("downloadTaskRow")
+        check("任务行渲染出来了", len(rows) == 3, f"{len(rows)} 行")
+        check("下载页有批量操作按钮",
+              self.item("downloadsCancelAllButton") is not None
+              and self.item("downloadsRetryFailedButton") is not None
+              and self.item("downloadsClearFinishedButton") is not None
+              and self.item("downloadsOpenFolderButton") is not None)
+        check("完成后导航角标归零", int(self.nav_download_badge()) == 0,
+              f"badge={self.nav_download_badge()}")
+        check("角标数量与进行中的任务对得上",
+              int(self.download.activeCount) == 0)
+
+        self.download.clearFinished()
+        self.pump(400)
+        check("清空已完成之后列表为空", self.download.tasks.count == 0,
+              f"{self.download.tasks.count}")
+
+        # 收尾：还原目录与页面，别影响后面的步骤
+        self.settings.resetDownloadDir()
+        self.qml_enum(view, "clearSelection()")
+        self.eval_js("app.go('discover')")
+        self.pump(400)
+
+    def track_list(self):
+        """当前可见的曲目列表组件（TrackListView）。"""
+        views = [v for v in self.find_items("trackListView") if v.isVisible()]
+        return views[0] if views else None
+
+    def nav_download_badge(self) -> int:
+        """导航栏「下载」项上的角标数（0 表示没有进行中的任务）。"""
+        nav = self.window.findChild(QObject, "navPane")
+        return int(nav.property("downloadCount") or 0) if nav is not None else -1
 
     # ── 信号处理器参数 ──────────────────────────────────────
     def step_signal_params(self):

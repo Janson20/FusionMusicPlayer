@@ -162,8 +162,9 @@ FluWindow {
                 favoriteCount: library.favoritesModel.count
                 historyCount: library.historyModel.count
                 localCount: library.localModel.count
+                downloadCount: download.activeCount
                 onPageRequested: function (pageId) { app.go(pageId) }
-                onLoginRequested: root.openLogin()
+                onLoginRequested: function () { root.openLogin() }
             }
 
             StackLayout {
@@ -181,6 +182,7 @@ FluWindow {
                     case "library": return 3
                     case "local": return 4
                     case "queue": return 5
+                    case "downloads": return 6
                     default: return 0
                     }
                 }
@@ -210,6 +212,10 @@ FluWindow {
                 LazyPage {
                     current: pageStack.currentIndex === 5
                     source: "pages/QueuePage.qml"
+                }
+                LazyPage {
+                    current: pageStack.currentIndex === 6
+                    source: "pages/DownloadsPage.qml"
                 }
             }
 

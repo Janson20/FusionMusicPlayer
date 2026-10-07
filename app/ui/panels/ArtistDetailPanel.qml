@@ -247,6 +247,7 @@ Item {
                 model: artist.model
                 showCover: false
                 busy: artist.loading
+                selectable: true
                 emptyIcon: FluentIcons.Contact
                 emptyTitle: artist.loading ? "正在加载歌手…" : "没有找到这位歌手的热门歌曲"
                 emptyDescription: artist.loading ? "" : "网易云接口里没有可播放的歌曲，换个歌手试试"
@@ -257,6 +258,9 @@ Item {
                 onRequestPlayNext: function (track) { player.playNextTrack(track) }
                 onRequestAppend: function (track) { player.appendToQueue(track) }
                 onRequestFavorite: function (track) { library.toggleFavorite(track) }
+                onRequestPlayMany: function (tracks) { player.playTrackInList(tracks, 0) }
+                onRequestAppendMany: function (tracks) { player.extendQueue(tracks) }
+                onRequestFavoriteMany: function (tracks) { library.addManyToFavorites(tracks) }
             }
         }
     }

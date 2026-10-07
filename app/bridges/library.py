@@ -351,6 +351,35 @@ class LibraryController(QObject):
         self.localChanged.emit()
         self.playlistsChanged.emit()
 
+    # ── 下载完成后加入曲库 ──────────────────────────────────
+
+    @Slot(str)
+    def addLocalFile(self, path: str) -> None:  # noqa: N802
+        """把刚下载好的文件加进「本地音乐」曲库（设置里的「完成后加入曲库」）。
+
+        会被下载控制器在**主线程**上调用（信号投递，见 bridges/download.py）。
+        读标签要开文件，同一个文件不会重复入索引（按规范化路径去重）。
+        """
+        target = str(path or "").strip()
+        if not target or not os.path.isfile(target):
+            return
+        try:
+            track = resolve_local_metadata(target)
+        except Exception as e:  # pragma: no cover - 读标签失败不该影响下载结果
+            logger.debug("读取下载文件标签失败 %s: %s", target, e)
+            return
+        if track is None:
+            return
+        key = os.path.normcase(os.path.abspath(target))
+        tracks = list(self._library.local_tracks())
+        for existing in tracks:
+            if existing.path and os.path.normcase(os.path.abspath(existing.path)) == key:
+                return
+        tracks.append(track)
+        self._library.set_local_tracks(tracks)
+        self._library.save()
+        self.localChanged.emit()
+
     def _on_library_event(self, what: str) -> None:
         if what == "favorites":
             self._favorites_model.set_tracks(self._library.favorites())

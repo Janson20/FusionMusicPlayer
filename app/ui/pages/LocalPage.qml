@@ -180,6 +180,8 @@ Item {
                     model: library.localModel
                     showSource: false
                     busy: library.scanning
+                    // 本地曲目本身不需要下载（多选时会自动跳过并说明）
+                    selectable: true
                     emptyIcon: FluentIcons.Folder
                     emptyTitle: "本地曲库为空"
                     emptyDescription: "添加一个音乐文件夹后点击「重新扫描」"
@@ -192,6 +194,9 @@ Item {
                     onRequestPlayNext: function (track) { player.playNextTrack(track) }
                     onRequestAppend: function (track) { player.appendToQueue(track) }
                     onRequestFavorite: function (track) { library.toggleFavorite(track) }
+                    onRequestPlayMany: function (tracks) { player.playTrackInList(tracks, 0) }
+                    onRequestAppendMany: function (tracks) { player.extendQueue(tracks) }
+                    onRequestFavoriteMany: function (tracks) { library.addManyToFavorites(tracks) }
                 }
             }
         }

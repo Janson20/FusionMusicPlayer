@@ -25,8 +25,17 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from . import cache
+from .naming import sanitize_filename as _sanitize_filename
 
 logger = logging.getLogger(__name__)
+
+#: 文件名清洗与歌曲下载共用一套规则（见 :mod:`app.core.naming`）。
+
+
+def sanitize_filename(name: str, fallback: str = "封面") -> str:
+    """把任意文本清洗成 Windows 能用的文件名主干（封面默认叫「封面」）。"""
+    return _sanitize_filename(name, fallback)
+
 
 #: 保存失败时能讲清楚原因的异常（界面直接把这句话弹给用户）
 class CoverError(Exception):
@@ -50,32 +59,7 @@ _SUFFIX_EQUIV = {
     ".bmp": (".bmp",),
 }
 
-_ILLEGAL_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
-_WHITESPACE = re.compile(r"\s+")
-_RESERVED_STEMS = frozenset(
-    {"con", "prn", "aux", "nul"}
-    | {f"com{i}" for i in range(1, 10)}
-    | {f"lpt{i}" for i in range(1, 10)}
-)
-#: 文件名主干长度上限（加上后缀与可能的序号也不会顶到文件系统的 255 字节）
-MAX_STEM_LENGTH = 120
-
 _BILIBILI_SUFFIX = re.compile(r"@[^/]*$")
-
-
-def sanitize_filename(name: str, fallback: str = "封面") -> str:
-    """把任意文本清洗成 Windows 能用的文件名主干（不含扩展名）。"""
-    text = _ILLEGAL_CHARS.sub("_", str(name or ""))
-    text = _WHITESPACE.sub(" ", text).strip()
-    # Windows 不允许文件名以点或空格结尾（"歌名." 会被静默截断）
-    text = text.rstrip(". ")
-    if not text:
-        text = fallback
-    if text.split(".")[0].lower() in _RESERVED_STEMS:
-        text = "_" + text
-    if len(text) > MAX_STEM_LENGTH:
-        text = text[:MAX_STEM_LENGTH].rstrip(". ")
-    return text or fallback
 
 
 def suggest_stem(track: Any) -> str:

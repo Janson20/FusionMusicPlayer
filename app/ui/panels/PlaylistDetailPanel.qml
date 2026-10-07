@@ -173,6 +173,7 @@ Item {
                 model: discover.detailModel
                 showCover: false
                 busy: discover.detailLoading
+                selectable: true
                 emptyIcon: FluentIcons.Library
                 emptyTitle: discover.detailLoading ? "正在加载歌单…" : "这个歌单没有可播放的歌曲"
                 emptyDescription: "部分歌单需要登录网易云后才能读取"
@@ -183,6 +184,9 @@ Item {
                 onRequestPlayNext: function (track) { player.playNextTrack(track) }
                 onRequestAppend: function (track) { player.appendToQueue(track) }
                 onRequestFavorite: function (track) { library.toggleFavorite(track) }
+                onRequestPlayMany: function (tracks) { player.playTrackInList(tracks, 0) }
+                onRequestAppendMany: function (tracks) { player.extendQueue(tracks) }
+                onRequestFavoriteMany: function (tracks) { library.addManyToFavorites(tracks) }
             }
         }
     }

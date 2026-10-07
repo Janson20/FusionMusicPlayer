@@ -98,9 +98,11 @@ Item {
 
                 TrackListView {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: Math.min(300, discover.dailyModel.count * 54 + 4)
+                    // +34：列表顶部的选择工具条也要占一行高度（多选入口常驻）
+                    Layout.preferredHeight: Math.min(300, discover.dailyModel.count * 54 + 4) + 34
                     model: discover.dailyModel
                     emptyTitle: "暂无每日推荐"
+                    selectable: true
                     onTrackActivated: function (index) {
                         player.playTrackInList(discover.dailyModel.allItems(), index)
                     }
@@ -108,6 +110,9 @@ Item {
                     onRequestPlayNext: function (track) { player.playNextTrack(track) }
                     onRequestAppend: function (track) { player.appendToQueue(track) }
                     onRequestFavorite: function (track) { library.toggleFavorite(track) }
+                    onRequestPlayMany: function (tracks) { player.playTrackInList(tracks, 0) }
+                    onRequestAppendMany: function (tracks) { player.extendQueue(tracks) }
+                    onRequestFavoriteMany: function (tracks) { library.addManyToFavorites(tracks) }
                 }
             }
 
@@ -200,8 +205,9 @@ Item {
 
                 TrackListView {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: Math.min(420, discover.newSongsModel.count * 54 + 4)
+                    Layout.preferredHeight: Math.min(420, discover.newSongsModel.count * 54 + 4) + 34
                     model: discover.newSongsModel
+                    selectable: true
                     onTrackActivated: function (index) {
                         player.playTrackInList(discover.newSongsModel.allItems(), index)
                     }
@@ -209,6 +215,9 @@ Item {
                     onRequestPlayNext: function (track) { player.playNextTrack(track) }
                     onRequestAppend: function (track) { player.appendToQueue(track) }
                     onRequestFavorite: function (track) { library.toggleFavorite(track) }
+                    onRequestPlayMany: function (tracks) { player.playTrackInList(tracks, 0) }
+                    onRequestAppendMany: function (tracks) { player.extendQueue(tracks) }
+                    onRequestFavoriteMany: function (tracks) { library.addManyToFavorites(tracks) }
                 }
             }
 

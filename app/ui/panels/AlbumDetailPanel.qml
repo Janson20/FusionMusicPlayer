@@ -322,6 +322,7 @@ Item {
                 showCover: false
                 showAlbum: false
                 busy: album.loading
+                selectable: true
                 emptyIcon: FluentIcons.MusicNote
                 emptyTitle: album.loading ? "正在加载专辑…" : "这张专辑没有可播放的歌曲"
                 emptyDescription: album.loading ? "" : "网易云接口里没有可播放的曲目，换一张专辑试试"
@@ -332,6 +333,9 @@ Item {
                 onRequestPlayNext: function (track) { player.playNextTrack(track) }
                 onRequestAppend: function (track) { player.appendToQueue(track) }
                 onRequestFavorite: function (track) { library.toggleFavorite(track) }
+                onRequestPlayMany: function (tracks) { player.playTrackInList(tracks, 0) }
+                onRequestAppendMany: function (tracks) { player.extendQueue(tracks) }
+                onRequestFavoriteMany: function (tracks) { library.addManyToFavorites(tracks) }
             }
         }
     }

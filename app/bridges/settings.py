@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import threading
+from pathlib import Path
 from typing import List
 
 from PySide6.QtCore import QObject, Property, Signal, Slot
@@ -102,7 +103,7 @@ class SettingsController(QObject):
     def cacheDir(self) -> str:  # noqa: N802
         return str(paths.cache_dir())
 
-    @Property(str, constant=True)
+    @Property(str, notify=changed)
     def downloadDir(self) -> str:  # noqa: N802
         configured = str(self._config.get("storage.download_dir", "") or "")
         return configured or str(paths.program_dir() / "downloads")
@@ -224,6 +225,87 @@ class SettingsController(QObject):
     def matchLocalOnline(self) -> bool:  # noqa: N802
         """扫描本地曲库时，是否按「歌名 + 歌手」在线匹配封面与歌词。"""
         return bool(self._config.get("local.match_online", True))
+
+    # ── 歌曲下载 ────────────────────────────────────────────
+
+    @Property(str, notify=changed)
+    def defaultQuality(self) -> str:  # noqa: N802
+        """下载默认音质（auto = 按可用最高档）。"""
+        from ..core import downloader
+
+        value = str(self._config.get("download.quality", "320k") or "320k")
+        if value == "auto":
+            return value
+        return value if value in downloader.QUALITY_LABELS else "320k"
+
+    @Property(str, notify=changed)
+    def filenameTemplate(self) -> str:  # noqa: N802
+        return str(self._config.get("download.filename_template", "{singer} - {name}")
+                   or "{singer} - {name}")
+
+    @Property(bool, notify=changed)
+    def downloadWriteTags(self) -> bool:  # noqa: N802
+        return bool(self._config.get("download.write_tags", True))
+
+    @Property(bool, notify=changed)
+    def downloadEmbedCover(self) -> bool:  # noqa: N802
+        return bool(self._config.get("download.embed_cover", True))
+
+    @Property(bool, notify=changed)
+    def downloadSaveLyric(self) -> bool:  # noqa: N802
+        return bool(self._config.get("download.save_lyric", True))
+
+    @Property(bool, notify=changed)
+    def downloadAddToLibrary(self) -> bool:  # noqa: N802
+        return bool(self._config.get("download.add_to_library", False))
+
+    @Property(str, notify=changed)
+    def downloadDuplicate(self) -> str:  # noqa: N802
+        from ..core import naming
+
+        value = str(self._config.get("download.duplicate", "rename") or "rename")
+        return value if value in naming.DUPLICATE_MODES else "rename"
+
+    @Property(int, notify=changed)
+    def downloadConcurrency(self) -> int:  # noqa: N802
+        from ..core.downloader import DownloadManager
+
+        return DownloadManager.clamp_concurrency(self._config.get("download.concurrency", 2))
+
+    @Property("QVariantList", constant=True)
+    def downloadDuplicateOptions(self):  # noqa: N802
+        return [
+            {"id": "rename", "name": "自动加序号 (1)"},
+            {"id": "skip", "name": "跳过已存在的"},
+            {"id": "overwrite", "name": "覆盖同名文件"},
+        ]
+
+    @Slot(str)
+    def setDownloadDir(self, url: str) -> None:  # noqa: N802
+        """设置下载目录（``file://`` URL 或普通路径）。目录建不出来时明确报错。"""
+        from .library import normalize_folder
+
+        path = normalize_folder(url)
+        if not path:
+            return
+        try:
+            Path(path).mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            self.errorOccurred.emit(f"这个目录用不了：{e}")
+            return
+        if not Path(path).is_dir():
+            self.errorOccurred.emit("选择的不是一个文件夹")
+            return
+        self._config.set("storage.download_dir", path)
+        self.changed.emit()
+        self.message.emit("下载目录已更新")
+
+    @Slot()
+    def resetDownloadDir(self) -> None:  # noqa: N802
+        """恢复默认下载目录（程序目录下的 downloads）。"""
+        self._config.set("storage.download_dir", "")
+        self.changed.emit()
+        self.message.emit("下载目录已恢复默认")
 
     @Property("QVariantList", notify=changed)
     def enabledSources(self):  # noqa: N802

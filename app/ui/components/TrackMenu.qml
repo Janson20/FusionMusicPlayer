@@ -14,12 +14,21 @@ FluMenu {
     property var trackData: null
     property bool isFavorite: false
     property var playlists: []
+    //: 宿主列表里当前选中的数量（0 = 没在多选；>0 时菜单里多一条批量入口）
+    property int selectionCount: 0
+    //: 右键点的这一行是否在选中集里（决定「下载选中的 N 首」出不出现）
+    property bool rowSelected: false
 
     readonly property var artistNames: ArtistNames.split(trackData && trackData.singer
                                                          ? trackData.singer : "")
     readonly property string albumName: trackData && trackData.album ? String(trackData.album) : ""
     readonly property string albumId: trackData && trackData.album_id
         ? String(trackData.album_id) : ""
+    readonly property bool downloadable: !!trackData && !trackData.isLocal
+        && String(trackData.songmid || "") !== ""
+    //: 音质选项（含「该音源有没有这一档」与预计体积），打开菜单时算一次
+    readonly property var qualityChoices: downloadable
+        ? download.qualityOptions(trackData) : []
 
     signal playNow
     signal playNext
@@ -29,6 +38,12 @@ FluMenu {
     signal viewArtist(string name)
     signal viewAlbum(string albumId, string albumName)
     signal copyInfo
+    //: 下载单曲（quality 为档位 id，空串表示用设置里的默认档）
+    signal downloadRequested(var track, string quality)
+    //: 下载当前多选的全部曲目
+    signal downloadSelectionRequested
+    //: 只把右键这一首下载到下载目录（音质与选项在对话框里定）
+    signal downloadToFolderRequested(var track)
 
     width: 208
 
@@ -70,6 +85,47 @@ FluMenu {
             FluMenuItem {
                 text: "新建歌单并添加…"
                 onClicked: control.addToPlaylist("__new__")
+            }
+        }
+    }
+
+    FluMenuSeparator {}
+
+    // 多选里右键：先给批量入口（这时用户多半是想整批下载）
+    FluMenuItem {
+        objectName: "trackMenuDownloadSelection"
+        visible: control.rowSelected && control.selectionCount > 1
+        text: "下载选中的 " + control.selectionCount + " 首…"
+        onClicked: control.downloadSelectionRequested()
+    }
+
+    FluMenuItem {
+        objectName: "trackMenuDownload"
+        text: "下载"
+        enabled: control.downloadable
+        // 本地曲目没有可下载的东西，禁掉并说明，而不是点了没反应
+        FluMenu {
+            width: 250
+            FluMenuItem {
+                objectName: "trackMenuDownloadDefault"
+                text: "按默认音质另存为（" + download.qualityLabel(download.defaults().quality) + "）…"
+                onClicked: control.downloadRequested(control.trackData, "")
+            }
+            FluMenuSeparator {}
+            Repeater {
+                model: control.qualityChoices
+                delegate: FluMenuItem {
+                    required property var modelData
+                    text: modelData.name
+                          + (modelData.sizeText !== "" ? "（约 " + modelData.sizeText + "）" : "")
+                          + (modelData.available ? "" : " · 该音源无此档")
+                    onClicked: control.downloadRequested(control.trackData, modelData.id)
+                }
+            }
+            FluMenuSeparator {}
+            FluMenuItem {
+                text: "下载到下载目录…"
+                onClicked: control.downloadToFolderRequested(control.trackData)
             }
         }
     }

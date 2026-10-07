@@ -55,6 +55,7 @@ PAGES: List[Dict[str, str]] = [
     {"id": "library", "name": "我的音乐", "icon": "Heart", "desc": "我喜欢与歌单"},
     {"id": "local", "name": "本地音乐", "icon": "Folder", "desc": "扫描本地曲库"},
     {"id": "queue", "name": "播放队列", "icon": "List", "desc": "当前播放列表"},
+    {"id": "downloads", "name": "下载", "icon": "Download", "desc": "下载任务与进度"},
 ]
 
 # ── 关闭主窗口的行为 ────────────────────────────────────────

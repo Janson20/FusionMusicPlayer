@@ -336,6 +336,7 @@ Item {
                     anchors.margins: 6
                     model: library.tracksModel
                     busy: library.selectedIsRemote && library.remoteLoading
+                    selectable: true
                     emptyIcon: library.selectedIsRemote ? FluentIcons.Cloud : FluentIcons.Heart
                     emptyTitle: library.selectedIsRemote
                         ? (library.remoteLoading ? "正在同步歌单…" : "这个歌单没有可显示的歌曲")
@@ -354,6 +355,9 @@ Item {
                     onRequestPlayNext: function (track) { player.playNextTrack(track) }
                     onRequestAppend: function (track) { player.appendToQueue(track) }
                     onRequestFavorite: function (track) { library.toggleFavorite(track) }
+                    onRequestPlayMany: function (tracks) { player.playTrackInList(tracks, 0) }
+                    onRequestAppendMany: function (tracks) { player.extendQueue(tracks) }
+                    onRequestFavoriteMany: function (tracks) { library.addManyToFavorites(tracks) }
                 }
             }
         }
