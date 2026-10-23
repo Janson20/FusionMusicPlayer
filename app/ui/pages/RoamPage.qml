@@ -101,14 +101,9 @@ Item {
         }
 
         // ── 推荐流 ──────────────────────────────────────────
-        Rectangle {
+        CardPanel {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            radius: Theme.radius
-            color: Theme.cardBg
-            border.width: 1
-            border.color: Theme.border
-            clip: true
 
             TrackListView {
                 objectName: "roamList"
@@ -123,14 +118,9 @@ Item {
                 emptyDescription: roam.loading ? "" : "点「换一批」让漫游开始挑歌"
                 emptyActionText: roam.loading ? "" : "换一批"
                 onEmptyActionTriggered: roam.refresh()
+                // 漫游的「点击行」不是普通播放，而是「从这一首开始漫游」
+                autoActivate: false
                 onTrackActivated: function (index) { roam.playFrom(index) }
-                onRequestPlayNow: function (track) { player.playTrack(track) }
-                onRequestPlayNext: function (track) { player.playNextTrack(track) }
-                onRequestAppend: function (track) { player.appendToQueue(track) }
-                onRequestFavorite: function (track) { library.toggleFavorite(track) }
-                onRequestPlayMany: function (tracks) { player.playTrackInList(tracks, 0) }
-                onRequestAppendMany: function (tracks) { player.extendQueue(tracks) }
-                onRequestFavoriteMany: function (tracks) { library.addManyToFavorites(tracks) }
             }
         }
 

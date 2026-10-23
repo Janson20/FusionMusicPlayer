@@ -13,66 +13,20 @@ Item {
 
     signal closeRequested
 
-    // ── 事件遮罩 ────────────────────────────────────────
-    // 和展开播放页同一个坑：普通 Item 的空白处不处理鼠标事件，点击会穿到
-    // 底下的导航栏 / 页面（点名「返回发现页」旁边的空白会直接切页）。
-    // 必须声明在其它子项之前，可交互控件才仍然优先拿到事件。
-    MouseArea {
-        objectName: "playlistDetailBlocker"
+    OverlayBackdrop {
         anchors.fill: parent
-        acceptedButtons: Qt.AllButtons
-        onWheel: function (wheel) { wheel.accepted = true }
-    }
-
-    // 覆盖层页面自带一份背景层（理由见 NowPlayingPanel.qml）：
-    // 只铺半透明色的话，底下的页面内容会直接透上来，像两层叠在一起。
-    BackgroundLayer {
-        anchors.fill: parent
-    }
-    Rectangle {
-        anchors.fill: parent
-        color: Theme.windowBg
-        opacity: Theme.alphaOverlay
+        blockerObjectName: "playlistDetailBlocker"
     }
 
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 24
         spacing: 16
-
-        // ── 顶部返回 ────────────────────────────────────────
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 10
-
-            FluIconButton {
-                objectName: "detailBackButton"
-                Layout.preferredWidth: 34
-                Layout.preferredHeight: 34
-                Layout.alignment: Qt.AlignVCenter
-                iconSize: 15
-                iconSource: FluentIcons.ChevronLeft
-                iconColor: Theme.textSecondary
-                text: "返回"
-                onClicked: control.closeRequested()
-            }
-
-            FluText {
-                Layout.alignment: Qt.AlignVCenter
-                text: "返回发现页"
-                font.pixelSize: 12
-                color: Theme.textSecondary
-            }
-
-            Item { Layout.fillWidth: true }
-
-            FluProgressRing {
-                Layout.preferredWidth: 20
-                Layout.preferredHeight: 20
-                Layout.alignment: Qt.AlignVCenter
-                strokeWidth: 3
-                visible: discover.detailLoading
-            }
+        DetailBackBar {
+            title: "返回发现页"
+            loading: discover.detailLoading
+            backObjectName: "detailBackButton"
+            onBackRequested: control.closeRequested()
         }
 
         // ── 歌单信息头 ──────────────────────────────────────
@@ -158,14 +112,9 @@ Item {
         }
 
         // ── 曲目 ────────────────────────────────────────────
-        Rectangle {
+        CardPanel {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            radius: Theme.radius
-            color: Theme.cardBg
-            border.width: 1
-            border.color: Theme.border
-            clip: true
 
             TrackListView {
                 anchors.fill: parent
@@ -177,16 +126,6 @@ Item {
                 emptyIcon: FluentIcons.Library
                 emptyTitle: discover.detailLoading ? "正在加载歌单…" : "这个歌单没有可播放的歌曲"
                 emptyDescription: "部分歌单需要登录网易云后才能读取"
-                onTrackActivated: function (index) {
-                    player.playTrackInList(discover.detailModel.allItems(), index)
-                }
-                onRequestPlayNow: function (track) { player.playTrack(track) }
-                onRequestPlayNext: function (track) { player.playNextTrack(track) }
-                onRequestAppend: function (track) { player.appendToQueue(track) }
-                onRequestFavorite: function (track) { library.toggleFavorite(track) }
-                onRequestPlayMany: function (tracks) { player.playTrackInList(tracks, 0) }
-                onRequestAppendMany: function (tracks) { player.extendQueue(tracks) }
-                onRequestFavoriteMany: function (tracks) { library.addManyToFavorites(tracks) }
             }
         }
     }

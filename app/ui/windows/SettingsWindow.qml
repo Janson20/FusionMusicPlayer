@@ -9,37 +9,20 @@ import "../components"
 /*!
     设置窗口（标题栏齿轮按钮打开）。
 */
-FluWindow {
+AppWindow {
     id: window
 
     // 尺寸同样要过一遍屏幕：低分辨率下 860×640 的窗口会比桌面还高，
     // 底部的按钮就点不到了（见 bridges/app.py 的 fit_window）。
-    readonly property var fitted: app.fitWindow(860, 640, 760, 540)
-
-    width: fitted.width
-    height: fitted.height
-    minimumWidth: Math.min(760, fitted.width)
-    minimumHeight: Math.min(540, fitted.height)
     title: "设置"
-    visible: false
-    // 关闭时只隐藏、不销毁：FluWindow 默认 closeDestory=true 会 deleteLater()，
-    // 之后 QML 里的 id 就成了已释放对象，再调 showWindow() 会报
-    // "Cannot call method 'showWindow' of null"。
-    closeDestory: false
-    fixSize: false
-    showStayTop: false
-    showDark: false
+    wantWidth: 860
+    wantHeight: 640
+    wantMinWidth: 760
+    wantMinHeight: 540
     showMaximize: true
 
-    // 背景与主窗口一致（自定义背景图也在这里生效 —— 拖滑块就能当场看到效果）
-    background: Component {
-        AppBackground { }
-    }
-
-    // FluWindow 的基类 Component.onCompleted 会无条件 show()，
-    // 不收回的话设置窗口会跟着主窗口一起弹出来。
-    // 基类 onCompleted 先于派生组件执行，所以这里 hide() 是可靠的。
-    Component.onCompleted: hide()
+    // 每次打开都重算一次缓存占用（可能刚清过 / 下过东西）
+    onOpened: settings.refreshCache()
 
     property int section: 0
 
@@ -53,12 +36,6 @@ FluWindow {
         { name: "存储",    icon: FluentIcons.Save },
         { name: "关于",    icon: FluentIcons.Info }
     ]
-
-    function showWindow() {
-        window.visible = true
-        window.requestActivate()
-        settings.refreshCache()
-    }
 
     RowLayout {
         anchors.fill: parent
@@ -255,88 +232,33 @@ FluWindow {
                         color: settings.backgroundActive ? Theme.textTertiary : Theme.warning
                         wrapMode: Text.Wrap
                     }
-                    GridLayout {
+                    ColumnLayout {
                         Layout.fillWidth: true
-                        columns: 3
-                        columnSpacing: 12
-                        rowSpacing: 8
+                        spacing: 8
                         // 没图时这几个旋钮没有可见效果，先灰掉，免得以为是坏的
                         enabled: settings.backgroundActive
                         opacity: settings.backgroundActive ? 1.0 : 0.5
 
-                        FluText {
-                            text: "透明度"
-                            font.pixelSize: 12
-                            color: Theme.textSecondary
-                            Layout.alignment: Qt.AlignVCenter
-                        }
-                        FluSlider {
-                            objectName: "backgroundOpacitySlider"
-                            Layout.preferredWidth: 240
-                            from: 0
-                            to: 100
-                            stepSize: 1
+                        PercentSliderRow {
+                            Layout.fillWidth: true
+                            label: "透明度"
                             value: settings.backgroundOpacity
-                            tooltipEnabled: true
-                            text: Math.round(value) + "%"
-                            onMoved: settings.setInt("appearance.background_opacity", Math.round(value))
+                            sliderObjectName: "backgroundOpacitySlider"
+                            onMoved: function (value) { settings.setInt("appearance.background_opacity", value) }
                         }
-                        FluText {
-                            Layout.preferredWidth: 42
-                            Layout.alignment: Qt.AlignVCenter
-                            text: settings.backgroundOpacity + "%"
-                            font.pixelSize: 12
-                            color: Theme.textTertiary
-                        }
-
-                        FluText {
-                            text: "质感（磨砂）"
-                            font.pixelSize: 12
-                            color: Theme.textSecondary
-                            Layout.alignment: Qt.AlignVCenter
-                        }
-                        FluSlider {
-                            objectName: "backgroundBlurSlider"
-                            Layout.preferredWidth: 240
-                            from: 0
-                            to: 100
-                            stepSize: 1
+                        PercentSliderRow {
+                            Layout.fillWidth: true
+                            label: "质感（磨砂）"
                             value: settings.backgroundBlur
-                            tooltipEnabled: true
-                            text: Math.round(value) + "%"
-                            onMoved: settings.setInt("appearance.background_blur", Math.round(value))
+                            sliderObjectName: "backgroundBlurSlider"
+                            onMoved: function (value) { settings.setInt("appearance.background_blur", value) }
                         }
-                        FluText {
-                            Layout.preferredWidth: 42
-                            Layout.alignment: Qt.AlignVCenter
-                            text: settings.backgroundBlur + "%"
-                            font.pixelSize: 12
-                            color: Theme.textTertiary
-                        }
-
-                        FluText {
-                            text: "蒙版"
-                            font.pixelSize: 12
-                            color: Theme.textSecondary
-                            Layout.alignment: Qt.AlignVCenter
-                        }
-                        FluSlider {
-                            objectName: "backgroundScrimSlider"
-                            Layout.preferredWidth: 240
-                            from: 0
-                            to: 100
-                            stepSize: 1
+                        PercentSliderRow {
+                            Layout.fillWidth: true
+                            label: "蒙版"
                             value: settings.backgroundScrim
-                            tooltipEnabled: true
-                            text: Math.round(value) + "%"
-                            onMoved: settings.setInt("appearance.background_scrim", Math.round(value))
-                        }
-                        FluText {
-                            Layout.preferredWidth: 42
-                            Layout.alignment: Qt.AlignVCenter
-                            text: settings.backgroundScrim + "%"
-                            font.pixelSize: 12
-                            color: Theme.textTertiary
+                            sliderObjectName: "backgroundScrimSlider"
+                            onMoved: function (value) { settings.setInt("appearance.background_scrim", value) }
                         }
                     }
 
@@ -345,112 +267,39 @@ FluWindow {
                         title: "分区不透明度"
                         subtitle: "数字越小越透；内容区（主体）不铺面板色，所以图在主体上最清"
                     }
-                    GridLayout {
+                    ColumnLayout {
                         Layout.fillWidth: true
-                        columns: 3
-                        columnSpacing: 12
-                        rowSpacing: 8
+                        spacing: 8
                         enabled: settings.backgroundActive
                         opacity: settings.backgroundActive ? 1.0 : 0.5
 
-                        FluText {
-                            text: "侧边栏"
-                            font.pixelSize: 12
-                            color: Theme.textSecondary
-                            Layout.alignment: Qt.AlignVCenter
-                        }
-                        FluSlider {
-                            objectName: "surfaceSidebarSlider"
-                            Layout.preferredWidth: 240
-                            from: 0
-                            to: 100
-                            stepSize: 1
+                        PercentSliderRow {
+                            Layout.fillWidth: true
+                            label: "侧边栏"
                             value: settings.surfaceSidebar
-                            tooltipEnabled: true
-                            text: Math.round(value) + "%"
-                            onMoved: settings.setInt("appearance.surface_sidebar", Math.round(value))
+                            sliderObjectName: "surfaceSidebarSlider"
+                            onMoved: function (value) { settings.setInt("appearance.surface_sidebar", value) }
                         }
-                        FluText {
-                            Layout.preferredWidth: 42
-                            Layout.alignment: Qt.AlignVCenter
-                            text: settings.surfaceSidebar + "%"
-                            font.pixelSize: 12
-                            color: Theme.textTertiary
-                        }
-
-                        FluText {
-                            text: "底部播放栏"
-                            font.pixelSize: 12
-                            color: Theme.textSecondary
-                            Layout.alignment: Qt.AlignVCenter
-                        }
-                        FluSlider {
-                            objectName: "surfaceBottomSlider"
-                            Layout.preferredWidth: 240
-                            from: 0
-                            to: 100
-                            stepSize: 1
+                        PercentSliderRow {
+                            Layout.fillWidth: true
+                            label: "底部播放栏"
                             value: settings.surfaceBottom
-                            tooltipEnabled: true
-                            text: Math.round(value) + "%"
-                            onMoved: settings.setInt("appearance.surface_bottom", Math.round(value))
+                            sliderObjectName: "surfaceBottomSlider"
+                            onMoved: function (value) { settings.setInt("appearance.surface_bottom", value) }
                         }
-                        FluText {
-                            Layout.preferredWidth: 42
-                            Layout.alignment: Qt.AlignVCenter
-                            text: settings.surfaceBottom + "%"
-                            font.pixelSize: 12
-                            color: Theme.textTertiary
-                        }
-
-                        FluText {
-                            text: "歌词页 / 详情页"
-                            font.pixelSize: 12
-                            color: Theme.textSecondary
-                            Layout.alignment: Qt.AlignVCenter
-                        }
-                        FluSlider {
-                            objectName: "surfaceOverlaySlider"
-                            Layout.preferredWidth: 240
-                            from: 0
-                            to: 100
-                            stepSize: 1
+                        PercentSliderRow {
+                            Layout.fillWidth: true
+                            label: "歌词页 / 详情页"
                             value: settings.surfaceOverlay
-                            tooltipEnabled: true
-                            text: Math.round(value) + "%"
-                            onMoved: settings.setInt("appearance.surface_overlay", Math.round(value))
+                            sliderObjectName: "surfaceOverlaySlider"
+                            onMoved: function (value) { settings.setInt("appearance.surface_overlay", value) }
                         }
-                        FluText {
-                            Layout.preferredWidth: 42
-                            Layout.alignment: Qt.AlignVCenter
-                            text: settings.surfaceOverlay + "%"
-                            font.pixelSize: 12
-                            color: Theme.textTertiary
-                        }
-
-                        FluText {
-                            text: "卡片 / 列表"
-                            font.pixelSize: 12
-                            color: Theme.textSecondary
-                            Layout.alignment: Qt.AlignVCenter
-                        }
-                        FluSlider {
-                            objectName: "surfaceCardSlider"
-                            Layout.preferredWidth: 240
-                            from: 0
-                            to: 100
-                            stepSize: 1
+                        PercentSliderRow {
+                            Layout.fillWidth: true
+                            label: "卡片 / 列表"
                             value: settings.surfaceCard
-                            tooltipEnabled: true
-                            text: Math.round(value) + "%"
-                            onMoved: settings.setInt("appearance.surface_card", Math.round(value))
-                        }
-                        FluText {
-                            Layout.preferredWidth: 42
-                            Layout.alignment: Qt.AlignVCenter
-                            text: settings.surfaceCard + "%"
-                            font.pixelSize: 12
-                            color: Theme.textTertiary
+                            sliderObjectName: "surfaceCardSlider"
+                            onMoved: function (value) { settings.setInt("appearance.surface_card", value) }
                         }
                     }
                     FluText {
@@ -531,24 +380,10 @@ FluWindow {
                     visible: window.section === 1
 
                     SectionHeader { Layout.fillWidth: true; title: "音质" }
-                    FluComboBox {
+                    QualityComboBox {
                         Layout.preferredWidth: 300
-                        model: {
-                            var names = []
-                            var opts = settings.qualityOptions
-                            for (var i = 0; i < opts.length; i++)
-                                names.push(opts[i].name)
-                            return names
-                        }
-                        currentIndex: {
-                            var opts = settings.qualityOptions
-                            for (var i = 0; i < opts.length; i++)
-                                if (opts[i].id === settings.quality) return i
-                            return 0
-                        }
-                        onActivated: function (index) {
-                            settings.set("playback.quality", settings.qualityOptions[index].id)
-                        }
+                        quality: settings.quality
+                        onPicked: function (id) { settings.set("playback.quality", id) }
                     }
                     FluText {
                         Layout.fillWidth: true
@@ -1273,26 +1108,11 @@ FluWindow {
                             font.pixelSize: 12
                             color: Theme.textSecondary
                         }
-                        FluComboBox {
+                        QualityComboBox {
                             objectName: "downloadQualityBox"
                             Layout.preferredWidth: 260
-                            model: {
-                                var names = []
-                                var options = settings.qualityOptions
-                                for (var i = 0; i < options.length; i++)
-                                    names.push(options[i].name)
-                                return names
-                            }
-                            currentIndex: {
-                                var options = settings.qualityOptions
-                                for (var i = 0; i < options.length; i++)
-                                    if (options[i].id === settings.defaultQuality) return i
-                                return 0
-                            }
-                            onActivated: function (index) {
-                                settings.set("download.quality",
-                                             settings.qualityOptions[index].id)
-                            }
+                            quality: settings.defaultQuality
+                            onPicked: function (id) { settings.set("download.quality", id) }
                         }
                     }
 

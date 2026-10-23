@@ -526,13 +526,13 @@ FluWindow {
     function openSettings() {
         settingsWindow = ensureWindow(settingsWindow, "windows/SettingsWindow.qml")
         if (settingsWindow)
-            settingsWindow.showWindow()
+            settingsWindow.openWindow()
     }
 
     function openLogin() {
         loginWindow = ensureWindow(loginWindow, "windows/LoginWindow.qml")
         if (loginWindow)
-            loginWindow.showWindow()
+            loginWindow.openWindow()
     }
 
     // 藏到托盘 / 退出前收子窗口：没建过的就别建了（否则退出时反而多花一笔）

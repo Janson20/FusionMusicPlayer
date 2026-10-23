@@ -165,48 +165,17 @@ Rectangle {
                     spacing: 0
                     visible: player.artist !== ""
 
-                    Repeater {
-                        // 播放栏窄（歌手区原本只给 200px），铺开 2 位，其余进「等 N 人」菜单
-                        model: ArtistNames.linkParts(player.artist, 2)
-
-                        delegate: FluText {
-                            required property var modelData
-
-                            objectName: modelData.more
-                                ? "playerBarArtistMore"
-                                : (modelData.separator ? "playerBarArtistSep"
-                                                       : "playerBarArtistLink")
-                            Layout.alignment: Qt.AlignVCenter
-                            Layout.maximumWidth: modelData.separator ? Number.POSITIVE_INFINITY : 110
-                            text: modelData.text
-                            font.pixelSize: 11
-                            font.underline: barArtistMouse.containsMouse && !modelData.separator
-                            color: (barArtistMouse.containsMouse && !modelData.separator)
-                                   ? Theme.accent : Theme.textTertiary
-                            elide: Text.ElideRight
-
-                            MouseArea {
-                                id: barArtistMouse
-                                anchors.fill: parent
-                                enabled: !modelData.separator
-                                hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: {
-                                    if (modelData.more)
-                                        barArtistMenu.popup()
-                                    else
-                                        control.openArtist(modelData.name)
-                                }
-                            }
-                        }
-                    }
-
-                    ArtistMenu {
-                        id: barArtistMenu
-                        objectName: "playerBarArtistMenu"
-                        names: ArtistNames.split(player.artist)
+                    ArtistLinkRow {
+                        source: ArtistNames.split(player.artist)
+                        limit: 2
+                        objectPrefix: "playerBarArtist"
+                        menuObjectName: "playerBarArtistMenu"
+                        linkMaxWidth: 110
+                        moreMaxWidth: 110
+                        onArtistActivated: function (id, name) { control.openArtist(name) }
                         onArtistChosen: function (name) { control.openArtist(name) }
                     }
+
 
                     // 歌手与专辑之间的「 · 」独立成项：拼进专辑名里的话，悬停时
                     // 下划线会把它一起划上，看着像专辑名的一部分

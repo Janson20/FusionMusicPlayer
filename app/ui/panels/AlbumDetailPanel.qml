@@ -4,7 +4,6 @@ import QtQuick.Layouts
 import FluentUI
 import ".."
 import "../components"
-import "../ArtistNames.js" as ArtistNames
 
 /*!
     专辑详情覆盖层：封面 / 专辑名 / 歌手 / 发行信息 + 曲目列表。
@@ -47,64 +46,20 @@ Item {
         return parts.join("  ·  ")
     }
 
-    // ── 事件遮罩 ────────────────────────────────────────
-    // 和其它覆盖层同一个坑：普通 Item 的空白处不吃鼠标事件，会点穿到底下的
-    // 导航栏 / 页面。必须声明在其它子项之前，可交互控件才仍然优先拿到事件。
-    MouseArea {
-        objectName: "albumDetailBlocker"
+    OverlayBackdrop {
         anchors.fill: parent
-        acceptedButtons: Qt.AllButtons
-        onWheel: function (wheel) { wheel.accepted = true }
-    }
-
-    // 覆盖层页面自带一份背景层（理由见 NowPlayingPanel.qml）
-    BackgroundLayer {
-        anchors.fill: parent
-    }
-    Rectangle {
-        anchors.fill: parent
-        color: Theme.windowBg
-        opacity: Theme.alphaOverlay
+        blockerObjectName: "albumDetailBlocker"
     }
 
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 24
         spacing: 16
-
-        // ── 顶部返回 ────────────────────────────────────────
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 10
-
-            FluIconButton {
-                objectName: "albumBackButton"
-                Layout.preferredWidth: 34
-                Layout.preferredHeight: 34
-                Layout.alignment: Qt.AlignVCenter
-                iconSize: 15
-                iconSource: FluentIcons.ChevronLeft
-                iconColor: Theme.textSecondary
-                text: "返回"
-                onClicked: control.closeRequested()
-            }
-
-            FluText {
-                Layout.alignment: Qt.AlignVCenter
-                text: "专辑"
-                font.pixelSize: 12
-                color: Theme.textSecondary
-            }
-
-            Item { Layout.fillWidth: true }
-
-            FluProgressRing {
-                Layout.preferredWidth: 20
-                Layout.preferredHeight: 20
-                Layout.alignment: Qt.AlignVCenter
-                strokeWidth: 3
-                visible: album.loading
-            }
+        DetailBackBar {
+            title: "专辑"
+            loading: album.loading
+            backObjectName: "albumBackButton"
+            onBackRequested: control.closeRequested()
         }
 
         // ── 专辑信息头 ──────────────────────────────────────
@@ -112,32 +67,15 @@ Item {
             Layout.fillWidth: true
             spacing: 20
 
-            Rectangle {
+            // 大封面：与列表 / 歌单页共用 CoverArt（描边由它自己画）
+            CoverArt {
                 Layout.preferredWidth: 148
                 Layout.preferredHeight: 148
                 Layout.alignment: Qt.AlignTop
-                radius: Theme.radiusLarge
-                color: Theme.cardBg
-                border.width: 1
-                border.color: Theme.border
-                clip: true
-
-                Image {
-                    anchors.fill: parent
-                    source: meta.cover !== undefined ? meta.cover : ""
-                    visible: source !== ""
-                    fillMode: Image.PreserveAspectCrop
-                    sourceSize.width: 296
-                    sourceSize.height: 296
-                }
-
-                FluIcon {
-                    anchors.centerIn: parent
-                    visible: !(meta.cover !== undefined && meta.cover !== "")
-                    iconSource: FluentIcons.MusicNote
-                    iconSize: 44
-                    iconColor: Theme.dark ? "#3A3846" : "#CFCCE0"
-                }
+                radiusSize: Theme.radiusLarge
+                borderWidth: 1
+                borderColor: Theme.border
+                source: meta.cover !== undefined ? meta.cover : ""
             }
 
             ColumnLayout {
@@ -164,68 +102,21 @@ Item {
                 // 外层 Item 把宽度夹在可用范围内：放得下就自然排，放不下才逐项省略
                 // （只给子项 fillWidth 的话，多出来的宽度会被分给歌手名，
                 //   名字之间被拉出大段空白，反而不像一行）
-                Item {
+                ArtistLinkRow {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: albumArtistRow.implicitHeight
-                    visible: control.artistNames.length > 0
-
-                    RowLayout {
-                        id: albumArtistRow
-                        anchors.left: parent.left
-                        width: Math.min(implicitWidth, parent.width)
-                        spacing: 0
-
-                        Repeater {
-                            model: ArtistNames.linkPartsOf(control.artistNames)
-                            delegate: FluText {
-                                required property var modelData
-
-                                // 分隔符单独成项，不参与悬停高亮也不吃点击
-                                objectName: modelData.more
-                                    ? "albumArtistMore"
-                                    : (modelData.separator ? "albumArtistSep" : "albumArtistLink")
-                                Layout.alignment: Qt.AlignVCenter
-                                Layout.fillWidth: !modelData.separator
-                                Layout.minimumWidth: modelData.separator ? 0 : 36
-                                Layout.maximumWidth: modelData.separator
-                                    ? Number.POSITIVE_INFINITY : 220
-                                text: modelData.text
-                                font.pixelSize: 13
-                                font.underline: !modelData.separator && !modelData.more
-                                                && albumArtistMouse.containsMouse
-                                color: (!modelData.separator && albumArtistMouse.containsMouse)
-                                       ? Theme.accent : Theme.textSecondary
-                                elide: Text.ElideRight
-
-                                MouseArea {
-                                    id: albumArtistMouse
-                                    anchors.fill: parent
-                                    enabled: !modelData.separator
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: {
-                                        if (modelData.more)
-                                            albumArtistMenu.popup()
-                                        else
-                                            artist.openById(modelData.item.id, modelData.item.name)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                ArtistMenu {
-                    id: albumArtistMenu
-                    names: {
-                        var out = []
-                        var items = control.artistNames || []
-                        for (var i = 0; i < items.length; i++)
-                            out.push(items[i].name)
-                        return out
-                    }
+                    Layout.preferredHeight: implicitHeight
+                    entries: true
+                    source: control.artistNames
+                    pixelSize: 13
+                    normalColor: Theme.textSecondary
+                    linkMinWidth: 36
+                    linkMaxWidth: 220
+                    moreMaxWidth: 220
+                    objectPrefix: "albumArtist"
+                    onArtistActivated: function (id, name) { artist.openById(id, name) }
                     onArtistChosen: function (name) { artist.openByName(name) }
                 }
+
 
                 FluText {
                     Layout.fillWidth: true
@@ -306,14 +197,9 @@ Item {
             Item { Layout.fillWidth: true }
         }
 
-        Rectangle {
+        CardPanel {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            radius: Theme.radius
-            color: Theme.cardBg
-            border.width: 1
-            border.color: Theme.border
-            clip: true
 
             TrackListView {
                 anchors.fill: parent
@@ -326,16 +212,6 @@ Item {
                 emptyIcon: FluentIcons.MusicNote
                 emptyTitle: album.loading ? "正在加载专辑…" : "这张专辑没有可播放的歌曲"
                 emptyDescription: album.loading ? "" : "网易云接口里没有可播放的曲目，换一张专辑试试"
-                onTrackActivated: function (index) {
-                    player.playTrackInList(album.model.allItems(), index)
-                }
-                onRequestPlayNow: function (track) { player.playTrack(track) }
-                onRequestPlayNext: function (track) { player.playNextTrack(track) }
-                onRequestAppend: function (track) { player.appendToQueue(track) }
-                onRequestFavorite: function (track) { library.toggleFavorite(track) }
-                onRequestPlayMany: function (tracks) { player.playTrackInList(tracks, 0) }
-                onRequestAppendMany: function (tracks) { player.extendQueue(tracks) }
-                onRequestFavoriteMany: function (tracks) { library.addManyToFavorites(tracks) }
             }
         }
     }

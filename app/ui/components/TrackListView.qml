@@ -7,8 +7,12 @@ import ".."
 /*!
     可复用的曲目列表：滚动、悬停、右键菜单、空状态、当前播放高亮、多选批量操作。
 
-    页面只需传入 `model`（TrackListModel）并处理语义化信号；把 `selectable` 打开
-    就自动拥有多选能力（选择工具条 + 勾选框 + 批量下载对话框），不必每个页面各接一遍。
+    页面只需传入 `model`（TrackListModel）；`selectable` 打开就自动拥有多选能力
+    （选择工具条 + 勾选框 + 批量下载对话框），不必每个页面各接一遍。
+
+    播放 / 入队 / 收藏这些动作**默认已经接好**（见文件末尾的 `onRequest*`）——
+    九个宿主页原先各抄了一遍完全相同的七行接线。需要改行为的页面（漫游页把「点击行」
+    换成「从这一首开始漫游」）关掉 `autoActivate` 再连自己的处理器即可。
 
     选择状态用 **uid 集合**（而不是行号）：列表重排、刷新之后选中的还是同一批歌；
     模型整表换掉（切换歌单 / 搜索新关键词）时会把不在新列表里的 uid 清掉。
@@ -30,6 +34,8 @@ Item {
     property int topMargin: 0
     //: 是否启用多选（所有曲目列表都可以开；本地列表也在内 —— 本地曲目会被跳过）
     property bool selectable: false
+    //: 点击行时是否按「当前列表」自动播放（漫游页自己接管 → 设 false）
+    property bool autoActivate: true
     //: 多选模式（进入后整行点击 = 切换选中，行首出现勾选框）
     property bool selectionMode: false
     //: 已选中的 uid 列表（每次变更整体替换，QML 才能感知到变化）
@@ -309,6 +315,25 @@ Item {
             }
         }
     }
+
+    // ── 默认动作接线 ────────────────────────────────────────
+    //
+    // 都是「对整份列表做同一件事」，页面之间没有任何差别，所以放在组件里。
+    // 信号照旧发出（页面仍可监听）；要**替换**某个动作的页面把同名处理器写在
+    // 实例上即可 —— QML 里实例上的处理器会覆盖组件里的这一份。
+
+    onTrackActivated: function (index) {
+        if (!control.autoActivate || !control.model)
+            return
+        player.playTrackInList(control.model.allItems(), index)
+    }
+    onRequestPlayNow: function (track) { player.playTrack(track) }
+    onRequestPlayNext: function (track) { player.playNextTrack(track) }
+    onRequestAppend: function (track) { player.appendToQueue(track) }
+    onRequestFavorite: function (track) { library.toggleFavorite(track) }
+    onRequestPlayMany: function (tracks) { player.playTrackInList(tracks, 0) }
+    onRequestAppendMany: function (tracks) { player.extendQueue(tracks) }
+    onRequestFavoriteMany: function (tracks) { library.addManyToFavorites(tracks) }
 
     TrackMenu {
         id: trackMenu

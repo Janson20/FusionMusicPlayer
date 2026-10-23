@@ -29,6 +29,7 @@ Rectangle {
     required property bool isOriginal
     required property string originalName
     required property string bestQuality
+    required property string qualityShort
     // 推荐理由（漫游流才有，别的列表是空串）
     required property string reason
     // 供右键菜单构造完整曲目数据使用
@@ -208,7 +209,7 @@ Rectangle {
                     Layout.preferredWidth: reasonText.implicitWidth + 12
                     Layout.preferredHeight: 16
                     radius: 8
-                    color: Theme.dark ? "#2A2836" : "#F0EFF7"
+                    color: Theme.chipBg
                     FluText {
                         id: reasonText
                         anchors.centerIn: parent
@@ -238,39 +239,16 @@ Rectangle {
                     width: Math.min(implicitWidth, parent.width)
                     spacing: 0
 
-                    Repeater {
-                        model: ArtistNames.linkParts(control.singer)
-                        delegate: FluText {
-                            required property var modelData
-
-                            // 分隔符是**独立**的一项：不跟着悬停变强调色、也没有下划线，
-                            // 更不吃点击（塞进歌手名里的话「 / 」会一起被划上）
-                            objectName: modelData.more
-                                ? "trackRowArtistMore"
-                                : (modelData.separator ? "trackRowArtistSep" : "trackRowArtistLink")
-                            Layout.alignment: Qt.AlignVCenter
-                            Layout.fillWidth: !modelData.separator
-                            Layout.minimumWidth: modelData.separator ? 0 : 28
-                            Layout.maximumWidth: modelData.separator ? Number.POSITIVE_INFINITY
-                                                                     : (modelData.more ? 64 : 190)
-                            text: modelData.text
-                            font.pixelSize: 11
-                            font.underline: !modelData.separator && !modelData.more
-                                            && artistMouse.containsMouse
-                            color: (!modelData.separator && !modelData.more
-                                    && artistMouse.containsMouse)
-                                   ? Theme.accent : Theme.textTertiary
-                            elide: Text.ElideRight
-
-                            MouseArea {
-                                id: artistMouse
-                                anchors.fill: parent
-                                enabled: !modelData.separator && !modelData.more
-                                hoverEnabled: !modelData.more
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: control.artistRequested(modelData.name)
-                            }
-                        }
+                    ArtistLinkRow {
+                        Layout.fillWidth: true
+                        source: ArtistNames.split(control.singer)
+                        limit: 3
+                        objectPrefix: "trackRowArtist"
+                        stretchLinks: true
+                        linkMaxWidth: 190
+                        moreMaxWidth: 64
+                        menuEnabled: false
+                        onArtistActivated: function (id, name) { control.artistRequested(name) }
                     }
 
                     // 歌手与专辑之间的「 · 」：同样要独立成项，不能拼进专辑名里
@@ -317,7 +295,7 @@ Rectangle {
             Layout.preferredHeight: 18
             Layout.alignment: Qt.AlignVCenter
             radius: 9
-            color: Theme.dark ? "#2A2836" : "#F0EFF7"
+            color: Theme.chipBg
             FluText {
                 id: srcText
                 anchors.centerIn: parent
@@ -330,8 +308,7 @@ Rectangle {
         FluText {
             visible: control.bestQuality !== "" && control.bestQuality !== "128k"
             Layout.alignment: Qt.AlignVCenter
-            text: control.bestQuality === "flac" ? "无损"
-                : (control.bestQuality === "flac24bit" ? "Hi-Res" : "320K")
+            text: control.qualityShort
             font.pixelSize: 10
             color: Theme.accent
         }

@@ -171,7 +171,7 @@ Item {
                     width: chipText.implicitWidth + 24
                     height: 28
                     radius: 14
-                    color: chipMouse.containsMouse ? Theme.accentSoft : (Theme.dark ? "#252431" : "#F0EFF7")
+                    color: chipMouse.containsMouse ? Theme.accentSoft : (Theme.chipBg)
                     Behavior on color { ColorAnimation { duration: Theme.durationFast } }
 
                     FluText {
@@ -212,7 +212,7 @@ Item {
                     radius: 15
                     color: search.currentSource === modelData.id
                         ? Theme.accent
-                        : (tabMouse.containsMouse ? Theme.accentSoft : (Theme.dark ? "#252431" : "#F0EFF7"))
+                        : (tabMouse.containsMouse ? Theme.accentSoft : (Theme.chipBg))
                     Behavior on color { ColorAnimation { duration: Theme.durationFast } }
 
                     Row {
@@ -412,14 +412,9 @@ Item {
         }
 
         // ── 结果 ────────────────────────────────────────────
-        Rectangle {
+        CardPanel {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            radius: Theme.radius
-            color: Theme.cardBg
-            border.width: 1
-            border.color: Theme.border
-            clip: true
 
             TrackListView {
                 id: resultList
@@ -434,16 +429,6 @@ Item {
                     ? "支持同时搜索 5 个音源，播放失败时会自动跨源兜底"
                     : "换个关键词，或在其它音源标签页中查看"
 
-                onTrackActivated: function (index) {
-                    player.playTrackInList(search.model.allItems(), index)
-                }
-                onRequestPlayNow: function (track) { player.playTrack(track) }
-                onRequestPlayNext: function (track) { player.playNextTrack(track) }
-                onRequestAppend: function (track) { player.appendToQueue(track) }
-                onRequestFavorite: function (track) { library.toggleFavorite(track) }
-                onRequestPlayMany: function (tracks) { player.playTrackInList(tracks, 0) }
-                onRequestAppendMany: function (tracks) { player.extendQueue(tracks) }
-                onRequestFavoriteMany: function (tracks) { library.addManyToFavorites(tracks) }
             }
         }
 

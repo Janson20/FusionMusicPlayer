@@ -103,16 +103,6 @@ Item {
                     model: discover.dailyModel
                     emptyTitle: "暂无每日推荐"
                     selectable: true
-                    onTrackActivated: function (index) {
-                        player.playTrackInList(discover.dailyModel.allItems(), index)
-                    }
-                    onRequestPlayNow: function (track) { player.playTrack(track) }
-                    onRequestPlayNext: function (track) { player.playNextTrack(track) }
-                    onRequestAppend: function (track) { player.appendToQueue(track) }
-                    onRequestFavorite: function (track) { library.toggleFavorite(track) }
-                    onRequestPlayMany: function (tracks) { player.playTrackInList(tracks, 0) }
-                    onRequestAppendMany: function (tracks) { player.extendQueue(tracks) }
-                    onRequestFavoriteMany: function (tracks) { library.addManyToFavorites(tracks) }
                 }
             }
 
@@ -208,16 +198,6 @@ Item {
                     Layout.preferredHeight: Math.min(420, discover.newSongsModel.count * 54 + 4) + 34
                     model: discover.newSongsModel
                     selectable: true
-                    onTrackActivated: function (index) {
-                        player.playTrackInList(discover.newSongsModel.allItems(), index)
-                    }
-                    onRequestPlayNow: function (track) { player.playTrack(track) }
-                    onRequestPlayNext: function (track) { player.playNextTrack(track) }
-                    onRequestAppend: function (track) { player.appendToQueue(track) }
-                    onRequestFavorite: function (track) { library.toggleFavorite(track) }
-                    onRequestPlayMany: function (tracks) { player.playTrackInList(tracks, 0) }
-                    onRequestAppendMany: function (tracks) { player.extendQueue(tracks) }
-                    onRequestFavoriteMany: function (tracks) { library.addManyToFavorites(tracks) }
                 }
             }
 

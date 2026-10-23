@@ -41,64 +41,20 @@ Item {
         return parts.join("  ·  ")
     }
 
-    // ── 事件遮罩 ────────────────────────────────────────
-    // 和其它覆盖层同一个坑：普通 Item 的空白处不吃鼠标事件，会点穿到底下的
-    // 导航栏 / 页面。必须声明在其它子项之前，可交互控件才仍然优先拿到事件。
-    MouseArea {
-        objectName: "artistDetailBlocker"
+    OverlayBackdrop {
         anchors.fill: parent
-        acceptedButtons: Qt.AllButtons
-        onWheel: function (wheel) { wheel.accepted = true }
-    }
-
-    // 覆盖层页面自带一份背景层（理由见 NowPlayingPanel.qml）
-    BackgroundLayer {
-        anchors.fill: parent
-    }
-    Rectangle {
-        anchors.fill: parent
-        color: Theme.windowBg
-        opacity: Theme.alphaOverlay
+        blockerObjectName: "artistDetailBlocker"
     }
 
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 24
         spacing: 16
-
-        // ── 顶部返回 ────────────────────────────────────────
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 10
-
-            FluIconButton {
-                objectName: "artistBackButton"
-                Layout.preferredWidth: 34
-                Layout.preferredHeight: 34
-                Layout.alignment: Qt.AlignVCenter
-                iconSize: 15
-                iconSource: FluentIcons.ChevronLeft
-                iconColor: Theme.textSecondary
-                text: "返回"
-                onClicked: control.closeRequested()
-            }
-
-            FluText {
-                Layout.alignment: Qt.AlignVCenter
-                text: "歌手"
-                font.pixelSize: 12
-                color: Theme.textSecondary
-            }
-
-            Item { Layout.fillWidth: true }
-
-            FluProgressRing {
-                Layout.preferredWidth: 20
-                Layout.preferredHeight: 20
-                Layout.alignment: Qt.AlignVCenter
-                strokeWidth: 3
-                visible: artist.loading
-            }
+        DetailBackBar {
+            title: "歌手"
+            loading: artist.loading
+            backObjectName: "artistBackButton"
+            onBackRequested: control.closeRequested()
         }
 
         // ── 歌手信息头 ──────────────────────────────────────
@@ -107,32 +63,16 @@ Item {
             spacing: 20
 
             // 圆形头像
-            Rectangle {
+            // 圆形头像：CoverArt 的 circle 模式（占位图标换成联系人）
+            CoverArt {
                 Layout.preferredWidth: 132
                 Layout.preferredHeight: 132
                 Layout.alignment: Qt.AlignTop
-                radius: 66
-                color: Theme.cardBg
-                border.width: 1
-                border.color: Theme.border
-                clip: true
-
-                Image {
-                    anchors.fill: parent
-                    source: artist.meta.cover !== undefined ? artist.meta.cover : ""
-                    visible: source !== ""
-                    fillMode: Image.PreserveAspectCrop
-                    sourceSize.width: 264
-                    sourceSize.height: 264
-                }
-
-                FluIcon {
-                    anchors.centerIn: parent
-                    visible: !(artist.meta.cover !== undefined && artist.meta.cover !== "")
-                    iconSource: FluentIcons.Contact
-                    iconSize: 44
-                    iconColor: Theme.dark ? "#3A3846" : "#CFCCE0"
-                }
+                circle: true
+                borderWidth: 1
+                borderColor: Theme.border
+                placeholderIcon: FluentIcons.Contact
+                source: artist.meta.cover !== undefined ? artist.meta.cover : ""
             }
 
             ColumnLayout {
@@ -232,14 +172,9 @@ Item {
             Item { Layout.fillWidth: true }
         }
 
-        Rectangle {
+        CardPanel {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            radius: Theme.radius
-            color: Theme.cardBg
-            border.width: 1
-            border.color: Theme.border
-            clip: true
 
             TrackListView {
                 anchors.fill: parent
@@ -251,16 +186,6 @@ Item {
                 emptyIcon: FluentIcons.Contact
                 emptyTitle: artist.loading ? "正在加载歌手…" : "没有找到这位歌手的热门歌曲"
                 emptyDescription: artist.loading ? "" : "网易云接口里没有可播放的歌曲，换个歌手试试"
-                onTrackActivated: function (index) {
-                    player.playTrackInList(artist.model.allItems(), index)
-                }
-                onRequestPlayNow: function (track) { player.playTrack(track) }
-                onRequestPlayNext: function (track) { player.playNextTrack(track) }
-                onRequestAppend: function (track) { player.appendToQueue(track) }
-                onRequestFavorite: function (track) { library.toggleFavorite(track) }
-                onRequestPlayMany: function (tracks) { player.playTrackInList(tracks, 0) }
-                onRequestAppendMany: function (tracks) { player.extendQueue(tracks) }
-                onRequestFavoriteMany: function (tracks) { library.addManyToFavorites(tracks) }
             }
         }
     }

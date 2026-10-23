@@ -37,7 +37,7 @@ ColumnLayout {
         visible: !control.busy
         iconSource: control.iconSource
         iconSize: 46
-        iconColor: Theme.dark ? "#3A3846" : "#CFCCE0"
+        iconColor: Theme.faintIcon
     }
 
     FluText {

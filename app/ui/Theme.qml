@@ -51,6 +51,16 @@ QtObject {
     readonly property color overlayBg: _surface(dark ? "#16151E" : "#FFFFFF", alphaCard)
     readonly property color scrim: Qt.rgba(0, 0, 0, dark ? 0.55 : 0.28)
 
+    /*! 「浅色块」：标签 / chip / 导航图标底这类**比卡片再深一点**的小块。
+
+    原先这段三元表达式在五个文件里抄了八遍，而且深色值已经漂成四种写法
+    （#252431 / #2A2836 / #2C2A38 / #2A2833）—— 同一种角色在不同页面深浅不一，
+    看上去像渲染差异。统一到这里。
+    */
+    readonly property color chipBg: dark ? "#252431" : "#F0EFF7"
+    //: 很淡的图标（空态插图、无封面占位上的音符），再淡就看不见了
+    readonly property color faintIcon: dark ? "#3A3846" : "#CFCCE0"
+
     // ── 文本 ────────────────────────────────────────────
     readonly property color textPrimary: FluTheme.fontPrimaryColor
     readonly property color textSecondary: FluTheme.fontSecondaryColor

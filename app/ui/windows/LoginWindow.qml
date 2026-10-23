@@ -8,44 +8,27 @@ import "../components"
 /*!
     网易云登录窗口：扫码 / 手机验证码 / 手机密码 / 粘贴 Cookie。
 */
-FluWindow {
+AppWindow {
     id: window
 
     // 窗口是固定尺寸的，但屏幕比它还小时照样得让位，否则确认按钮会被顶出屏幕
-    readonly property var fitted: app.fitWindow(720, 520, 700, 480)
-
-    width: fitted.width
-    height: fitted.height
-    minimumWidth: Math.min(700, fitted.width)
-    minimumHeight: Math.min(480, fitted.height)
     title: "登录网易云音乐"
-    visible: false
-    // 关闭时只隐藏、不销毁（原因同 SettingsWindow.qml）
-    closeDestory: false
-    showStayTop: false
-    showDark: false
+    wantWidth: 720
+    wantHeight: 520
+    wantMinWidth: 700
+    wantMinHeight: 480
     showMaximize: false
     fixSize: true
-
-    // 背景与主窗口一致（见 components/AppBackground.qml）
-    background: Component {
-        AppBackground { }
-    }
-
-    // 抵消 FluWindow 基类 Component.onCompleted 里的无条件 show()
-    Component.onCompleted: hide()
 
     property int method: 0   // 0 扫码 / 1 手机 / 2 Cookie
     property string phone: ""
     property string secret: ""
     property bool usePassword: false
 
-    function showWindow() {
-        window.visible = true
-        window.requestActivate()
-        if (account.loggedIn)
-            return
-        account.startQrLogin()
+    // 打开时自动开始扫码（已经登录就不用）
+    onOpened: {
+        if (!account.loggedIn)
+            account.startQrLogin()
     }
 
     onVisibleChanged: {
@@ -252,7 +235,7 @@ FluWindow {
                             color: window.method === index
                                 ? Theme.accent
                                 : (methodMouse.containsMouse ? Theme.accentSoft
-                                   : (Theme.dark ? "#252431" : "#F0EFF7"))
+                                   : (Theme.chipBg))
                             Behavior on color { ColorAnimation { duration: Theme.durationFast } }
 
                             FluText {

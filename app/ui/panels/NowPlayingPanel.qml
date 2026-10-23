@@ -67,32 +67,10 @@ Item {
         album.openById(player.albumId, player.album)
     }
 
-    // ── 事件遮罩 ────────────────────────────────────────
-    // 面板根节点只是个普通 Item：空白处不处理鼠标事件，事件会继续往下找
-    // 能接收的项，于是会穿透到底下的导航栏 / 页面 / 播放栏（展开态能点到
-    // 导航项）。用它兜住空白区域的事件，并顺手吃掉滚轮，避免滚动穿透。
-    // 必须声明在其它子项之前，可交互控件才仍然优先拿到事件。
-    MouseArea {
-        objectName: "nowPlayingBlocker"
+    OverlayBackdrop {
         anchors.fill: parent
-        acceptedButtons: Qt.AllButtons
-        onWheel: function (wheel) { wheel.accepted = true }
-    }
-
-    // ── 背景：自带一份背景层 + 一层按分区参数压的主题色 ──
-    //
-    // **不能**只铺一块半透明的主题色：这一页盖在内容区（甚至导航栏与播放栏）上面，
-    // 半透明会让上一页的卡片、列表直接透上来，看着像两层内容叠在一起。
-    // 自绘一份背景层就把底下的东西挡住了，同时又看得到背景图。
-    BackgroundLayer {
-        anchors.fill: parent
-    }
-    Rectangle {
-        objectName: "nowPlayingBackdrop"
-        anchors.fill: parent
-        color: Theme.windowBg
-        // 没有背景图时 alphaOverlay = 1 → 与改动前完全一致（实色底）
-        opacity: Theme.alphaOverlay
+        blockerObjectName: "nowPlayingBlocker"
+        scrimObjectName: "nowPlayingBackdrop"
     }
 
     // 顶部一层品牌色柔光（原来的观感保留）
@@ -236,67 +214,21 @@ Item {
                 // 歌手名可点（进歌手页）。歌手多的时候只铺开前几位，
                 // 剩下的收进「等 N 人」（点开是完整列表）——
                 // RowLayout 不会换行，十几个歌手会把这一行撑到窗口两边去。
-                Item {
+                ArtistLinkRow {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: artistRow.implicitHeight
-
-                    RowLayout {
-                        id: artistRow
-                        // 宽度夹在左栏之内，超出的部分交给 elide 逐项省略，
-                        // 而不是让整行溢出（溢出的那截会横着盖住封面与歌词）
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        width: Math.min(implicitWidth, parent.width)
-                        spacing: 0
-                        visible: player.artist !== ""
-
-                        Repeater {
-                            // 这一栏窄（180~330px），只铺开 2 位：再多就每位只剩
-                            // 五十来像素，名字会被省略号啃得看不出是谁
-                            model: ArtistNames.linkParts(player.artist, 2)
-
-                            delegate: FluText {
-                                required property var modelData
-
-                                // 分隔符单独成项，不参与悬停高亮也不吃点击
-                                objectName: modelData.more
-                                    ? "nowPlayingArtistMore"
-                                    : (modelData.separator ? "nowPlayingArtistSep"
-                                                           : "nowPlayingArtistLink")
-                                Layout.alignment: Qt.AlignVCenter
-                                Layout.fillWidth: !modelData.separator
-                                Layout.minimumWidth: modelData.separator ? 0 : 36
-                                Layout.maximumWidth: modelData.separator
-                                    ? Number.POSITIVE_INFINITY : 220
-                                text: modelData.text
-                                font.pixelSize: 13
-                                font.underline: artistMouse.containsMouse && !modelData.separator
-                                color: (artistMouse.containsMouse && !modelData.separator)
-                                       ? Theme.accent : Theme.textSecondary
-                                elide: Text.ElideRight
-
-                                MouseArea {
-                                    id: artistMouse
-                                    anchors.fill: parent
-                                    enabled: !modelData.separator
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: {
-                                        if (modelData.more)
-                                            artistMenu.popup()
-                                        else
-                                            control.openArtist(modelData.name)
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    ArtistMenu {
-                        id: artistMenu
-                        objectName: "nowPlayingArtistMenu"
-                        names: ArtistNames.split(player.artist)
-                        onArtistChosen: function (name) { control.openArtist(name) }
-                    }
+                    Layout.preferredHeight: implicitHeight
+                    source: ArtistNames.split(player.artist)
+                    limit: 2
+                    pixelSize: 13
+                    normalColor: Theme.textSecondary
+                    linkMinWidth: 36
+                    linkMaxWidth: 220
+                    moreMaxWidth: 220
+                    horizontalAlign: Text.AlignHCenter
+                    objectPrefix: "nowPlayingArtist"
+                    menuObjectName: "nowPlayingArtistMenu"
+                    onArtistActivated: function (id, name) { control.openArtist(name) }
+                    onArtistChosen: function (name) { control.openArtist(name) }
                 }
 
                 // 专辑名可点（进专辑页）
@@ -395,7 +327,7 @@ Item {
                         radius: 14
                         color: control.tab === modelData.id
                             ? Theme.accent
-                            : (tabMouse.containsMouse ? Theme.accentSoft : (Theme.dark ? "#252431" : "#F0EFF7"))
+                            : (tabMouse.containsMouse ? Theme.accentSoft : (Theme.chipBg))
                         Behavior on color { ColorAnimation { duration: Theme.durationFast } }
 
                         FluText {
@@ -551,7 +483,7 @@ Item {
                     Layout.alignment: Qt.AlignHCenter
                     iconSource: FluentIcons.MusicInfo
                     iconSize: 40
-                    iconColor: Theme.dark ? "#3A3846" : "#CFCCE0"
+                    iconColor: Theme.faintIcon
                 }
                 FluText {
                     Layout.alignment: Qt.AlignHCenter
@@ -635,7 +567,7 @@ Item {
                     Layout.alignment: Qt.AlignHCenter
                     iconSource: FluentIcons.KnowledgeArticle
                     iconSize: 40
-                    iconColor: Theme.dark ? "#3A3846" : "#CFCCE0"
+                    iconColor: Theme.faintIcon
                 }
                 FluText {
                     Layout.alignment: Qt.AlignHCenter

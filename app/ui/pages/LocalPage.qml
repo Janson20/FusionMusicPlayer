@@ -99,7 +99,7 @@ Item {
                             width: Math.min(360, folderText.implicitWidth + 48)
                             height: 30
                             radius: 15
-                            color: Theme.dark ? "#252431" : "#F0EFF7"
+                            color: Theme.chipBg
 
                             RowLayout {
                                 anchors.fill: parent
@@ -149,14 +149,9 @@ Item {
         }
 
         // ── 曲目列表 ────────────────────────────────────────
-        Rectangle {
+        CardPanel {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            radius: Theme.radius
-            color: Theme.cardBg
-            border.width: 1
-            border.color: Theme.border
-            clip: true
 
             ColumnLayout {
                 anchors.fill: parent
@@ -187,16 +182,6 @@ Item {
                     emptyDescription: "添加一个音乐文件夹后点击「重新扫描」"
                     emptyActionText: "添加文件夹"
                     onEmptyActionTriggered: folderDialog.open()
-                    onTrackActivated: function (index) {
-                        player.playTrackInList(library.localModel.allItems(), index)
-                    }
-                    onRequestPlayNow: function (track) { player.playTrack(track) }
-                    onRequestPlayNext: function (track) { player.playNextTrack(track) }
-                    onRequestAppend: function (track) { player.appendToQueue(track) }
-                    onRequestFavorite: function (track) { library.toggleFavorite(track) }
-                    onRequestPlayMany: function (tracks) { player.playTrackInList(tracks, 0) }
-                    onRequestAppendMany: function (tracks) { player.extendQueue(tracks) }
-                    onRequestFavoriteMany: function (tracks) { library.addManyToFavorites(tracks) }
                 }
             }
         }

@@ -29,7 +29,7 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from . import cache
 from . import session as play_session
 from .lyrics import Lyrics
-from .models import Track, format_duration
+from .models import Track, format_duration, quality_short
 from .queue import PlayMode, mode_from_name, PLAY_MODE_LABELS, PLAY_MODE_NAMES
 from .trackutil import as_track
 from .resolver import Resolved, resolve
@@ -236,15 +236,8 @@ class PlayerEngine(QObject):
 
     @Property(str, notify=trackChanged)
     def qualityLabel(self) -> str:  # noqa: N802
-        q = (self._current_quality or "").lower()
-        return {
-            "128k": "标准",
-            "320k": "高品",
-            "flac": "无损",
-            "flac24bit": "Hi-Res",
-            "lossless": "无损",
-            "auto": "自动",
-        }.get(q, q or "")
+        """实际播放档位的短名（与列表角标同一张表，见 models.QUALITY_SHORT_LABELS）。"""
+        return quality_short(self._current_quality)
 
     @Property(int, notify=positionChanged)
     def position(self) -> int:

@@ -911,6 +911,11 @@ FusionMusicPlayer/
 │       ├── components/          标题栏 / 导航 / 播放栏 / 曲目行 / 对话框…
 │       │                        LazyPage.qml —— 页面按需实例化的容器
 │       │                        AppBackground.qml —— 窗口背景层（自定义背景图）
+│       │                        TrackListView.qml —— 曲目列表（选择 / 播放 / 右键菜单）
+│       │                        ArtistLinkRow.qml —— 可点歌手名 + 「等 N 人」折叠
+│       │                        CardPanel.qml / OverlayBackdrop.qml / DetailBackBar.qml
+│       │                        AppWindow.qml / SaveFileDialog.qml —— 窗口与另存为骨架
+│       │                        PercentSliderRow.qml / QualityComboBox.qml —— 设置项
 │       ├── pages/               发现 / 漫游 / 搜索 / 我的音乐 / 本地 / 队列
 │       ├── panels/              展开播放页 / 歌单详情 / 歌手详情 / 专辑详情
 │       └── windows/             设置 / 登录（启动时不实例化，用到才建）

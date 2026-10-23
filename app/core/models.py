@@ -26,6 +26,26 @@ def format_duration(seconds: int | float) -> str:
     m, sec = divmod(s, 60)
     return f"{m}:{sec:02d}"
 
+#: 音质档位的**短名**：列表角标、播放栏那一颗标签用。
+#: 下载对话框里的长名（"无损 FLAC" / "高品质 320K"）在 app/core/downloader.py ——
+#: 两者用途不同（一个是空间紧的角标，一个是菜单项），但短名只能有一份：
+#: 以前 QML 里还硬编码过一套，播放栏叫「高品」、列表角标叫「320K」。
+QUALITY_SHORT_LABELS = {
+    "flac24bit": "Hi-Res",
+    "flac": "无损",
+    "320k": "320K",
+    "128k": "标准",
+    "lossless": "无损",
+    "auto": "自动",
+}
+
+
+def quality_short(quality: str) -> str:
+    """档位 → 短名（认不出来的档位原样返回）。"""
+    text = str(quality or "").strip().lower()
+    return QUALITY_SHORT_LABELS.get(text, text)
+
+
 def source_display(source: str) -> str:
     from ..sources import SOURCE_NAMES
 
@@ -118,6 +138,11 @@ class Track:
         return "128k"
 
     @property
+    def quality_short(self) -> str:
+        """最佳档位的短名（列表角标用）。"""
+        return quality_short(self.best_quality)
+
+    @property
     def display_name(self) -> str:
         """带原唱/版本标记的展示名。"""
         if self.original_name and self.original_name not in self.name:
@@ -187,6 +212,7 @@ class Track:
                 "sourceText": self.source_text,
                 "isLocal": self.is_local,
                 "bestQuality": self.best_quality,
+                "qualityShort": self.quality_short,
                 "displayName": self.display_name,
             }
         )
@@ -230,6 +256,7 @@ def role_names() -> List[bytes]:
         b"playCount",
         b"displayName",
         b"reason",
+        b"qualityShort",
     ]
 
 _ROLE_KEYS = [r.decode() for r in role_names()]
@@ -281,6 +308,8 @@ class TrackListModel(QAbstractListModel):
                 return t.best_quality
             if key == "displayName":
                 return t.display_name
+            if key == "qualityShort":
+                return t.quality_short
             return getattr(t, key, None)
         if role == Qt.DisplayRole:
             return t.name

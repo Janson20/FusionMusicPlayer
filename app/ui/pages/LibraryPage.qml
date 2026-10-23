@@ -90,7 +90,7 @@ Item {
                                 Layout.alignment: Qt.AlignVCenter
                                 radius: Theme.radiusSmall
                                 color: library.selectedId === modelData.id
-                                    ? Theme.accent : (Theme.dark ? "#2C2A38" : "#F0EFF7")
+                                    ? Theme.accent : (Theme.chipBg)
                                 FluIcon {
                                     anchors.centerIn: parent
                                     iconSource: modelData.icon === "Heart" ? FluentIcons.Heart
@@ -322,14 +322,9 @@ Item {
                 onActionTriggered: player.playTrackInList(library.tracksModel.allItems(), 0)
             }
 
-            Rectangle {
+            CardPanel {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                radius: Theme.radius
-                color: Theme.cardBg
-                border.width: 1
-                border.color: Theme.border
-                clip: true
 
                 TrackListView {
                     anchors.fill: parent
@@ -348,16 +343,6 @@ Item {
                     emptyDescription: library.selectedIsRemote
                         ? "部分歌单需要会员权限才能读取完整曲目"
                         : "在搜索页或发现页右键歌曲即可添加"
-                    onTrackActivated: function (index) {
-                        player.playTrackInList(library.tracksModel.allItems(), index)
-                    }
-                    onRequestPlayNow: function (track) { player.playTrack(track) }
-                    onRequestPlayNext: function (track) { player.playNextTrack(track) }
-                    onRequestAppend: function (track) { player.appendToQueue(track) }
-                    onRequestFavorite: function (track) { library.toggleFavorite(track) }
-                    onRequestPlayMany: function (tracks) { player.playTrackInList(tracks, 0) }
-                    onRequestAppendMany: function (tracks) { player.extendQueue(tracks) }
-                    onRequestFavoriteMany: function (tracks) { library.addManyToFavorites(tracks) }
                 }
             }
         }

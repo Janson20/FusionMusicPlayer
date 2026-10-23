@@ -24,14 +24,9 @@ Item {
             onActionTriggered: clearDialog.open()
         }
 
-        Rectangle {
+        CardPanel {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            radius: Theme.radius
-            color: Theme.cardBg
-            border.width: 1
-            border.color: Theme.border
-            clip: true
 
             ListView {
                 id: queueList
