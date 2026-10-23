@@ -54,10 +54,16 @@ def resource_dir() -> Path:
     return program_dir()
 
 
-def _writable(path: Path) -> bool:
-    """探测目录是否可写（安装到 Program Files 时需要回退）。"""
+def is_writable(path: Path, *, create: bool = False) -> bool:
+    """探测目录是否可写（安装到 Program Files 时需要回退）。
+
+    ``create=True`` 时顺手把目录建出来 —— 「能不能在这里放数据」问的就是
+    「建不出目录 / 建出来却写不进探测文件」这两件事，一次问清。
+    自动更新那边只要探测已有的程序目录，于是默认不建。
+    """
     try:
-        path.mkdir(parents=True, exist_ok=True)
+        if create:
+            path.mkdir(parents=True, exist_ok=True)
         probe = path / f".write_probe_{os.getpid()}"
         probe.write_bytes(b"")
         probe.unlink()
@@ -112,7 +118,7 @@ def data_dir() -> Path:
     if env:
         return Path(env).expanduser().resolve()
     target = program_dir() / "data"
-    if _writable(target):
+    if is_writable(target, create=True):
         return target
     return _fallback_dir()
 
@@ -199,6 +205,43 @@ def resource(path: str) -> str:
     if not p.is_absolute():
         p = qml_dir() / path
     return QUrl.fromLocalFile(str(p)).toString()
+
+
+def from_file_url(value: str) -> str:
+    """QML 文件对话框给的 ``file://`` URL → 本地路径（普通路径原样返回）。
+
+    QML 的 ``FileDialog.selectedFile`` / ``FolderDialog.selectedFolder`` 都是
+    ``url`` 类型，``toString()`` 出来是 ``file:///D:/x/y.mp3``（中文与空格
+    还会被百分号转义）。直接塞给 ``Path`` 会得到 ``file:\\D:\\x\\y.mp3``
+    这种四不像，落盘时报 ``WinError 123``。
+
+    解析不出来时原样返回：宁可让调用方拿着原来那个字符串去报错，也不要在这里
+    悄悄吞成空串。
+    """
+    text = str(value or "").strip()
+    if not text or not text.lower().startswith("file:"):
+        return text
+    try:
+        from PySide6.QtCore import QUrl
+
+        return QUrl(text).toLocalFile() or text
+    except Exception:  # pragma: no cover - 依赖 Qt
+        return text
+
+
+def normalize_folder(value: str) -> str:
+    """文件夹选择器给的 URL 或手输路径 → 绝对路径（空串表示没给）。
+
+    手输路径仍然兼容 —— 老配置文件里存的就是纯路径，用户也可能从资源管理器
+    粘一个进来（还常常带着两边引号）。
+    """
+    text = from_file_url(str(value or "").strip().strip('"').strip())
+    if not text:
+        return ""
+    try:
+        return os.path.abspath(os.path.expanduser(text))
+    except Exception:  # pragma: no cover - 路径异常时原样返回
+        return text
 
 
 def ensure_dirs() -> None:

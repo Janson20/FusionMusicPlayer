@@ -17,6 +17,7 @@ from typing import Dict, Optional, Tuple
 
 from ..lazy import requests  # 延迟导入：requests 本体要 0.4 秒，见 app/lazy.py
 from .. import paths
+from ..units import human_size
 
 logger = logging.getLogger(__name__)
 
@@ -219,14 +220,6 @@ def _last_used(path: Path) -> float:
     except OSError:
         return 0.0
 
-def _size_text(size: int) -> str:
-    """字节数 → 日志里好读的一行（缓存清理都是几 KB 到几 GB，单位要跟着走）。"""
-    if size >= 1048576:
-        return f"{size / 1048576:.1f} MB"
-    if size >= 1024:
-        return f"{size / 1024:.1f} KB"
-    return f"{size} B"
-
 def dedupe_media() -> Tuple[int, int]:
     """删掉媒体缓存里**内容完全相同**的重复文件，返回 ``(删除数, 释放字节数)``。
 
@@ -271,7 +264,7 @@ def dedupe_media() -> Tuple[int, int]:
             except OSError as e:
                 logger.debug("删除重复缓存失败 %s: %s", path, e)
     if removed:
-        logger.info("媒体缓存去重：删除 %d 个重复文件，释放 %s", removed, _size_text(freed))
+        logger.info("媒体缓存去重：删除 %d 个重复文件，释放 %s", removed, human_size(freed))
     return (removed, freed)
 
 def directory_size(path: Path) -> int:

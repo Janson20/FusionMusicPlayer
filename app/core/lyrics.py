@@ -32,7 +32,7 @@ from __future__ import annotations
 import bisect
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 _TIME_TAG_RE = re.compile(r"\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]")
 _WORD_TAG_RE = re.compile(r"<(-?\d+),(-?\d+)(?:,-?\d+)?>")
@@ -244,7 +244,7 @@ class Lyrics:
         for line in self.lines:
             text = lookup.get(line.time)
             if not text:
-                text = _nearest_text(lookup, sub_times, line.time, PAIR_TOLERANCE_MS)
+                text = _nearest(lookup, sub_times, line.time, PAIR_TOLERANCE_MS) or ""
             if text:
                 setattr(line, attr, text)
 
@@ -283,7 +283,7 @@ class Lyrics:
             cand = lookup.get(line.time)
             if cand is None or _norm_text(cand.text) != _norm_text(line.text):
                 # 时间戳正好相等但文本对不上（同一时刻的不同版本歌词）也要继续找
-                cand = _nearest_line(lookup, times, line.time, WORD_PAIR_TOLERANCE_MS)
+                cand = _nearest(lookup, times, line.time, WORD_PAIR_TOLERANCE_MS)
             if cand is None or _norm_text(cand.text) != _norm_text(line.text):
                 continue
             adopted = _adopt_words(cand.text, cand.words, line.text)
@@ -436,10 +436,14 @@ class Lyrics:
         ]
 
 
-def _nearest_text(lookup: Dict[int, str], times: List[int], target: int, tolerance: int) -> str:
-    """在容差范围内取时间最接近的一条。"""
+def _nearest(lookup: Dict[int, Any], times: List[int], target: int, tolerance: int) -> Optional[Any]:
+    """在容差范围内取时间最接近的一条（同一时刻不算最近，找的是「擦边」匹配）。
+
+    翻译 / 罗马音与逐字歌词都要做这件事，只是链表里的值一个是文本、一个是整行；
+    查找规则必须一致，所以只留这一份实现。
+    """
     pos = bisect.bisect_left(times, target)
-    best = ""
+    best: Optional[Any] = None
     best_delta = tolerance + 1
     for i in (pos - 1, pos):
         if 0 <= i < len(times):
@@ -654,22 +658,6 @@ def _adopt_words(source_text: str, words: List[LyricWord], target_text: str) -> 
 def _norm_text(text: str) -> str:
     """比对两份歌词的文本时用的归一化：只去空白，不动标点与大小写。"""
     return "".join(str(text or "").split())
-
-
-def _nearest_line(
-    lookup: Dict[int, LyricLine], times: List[int], target: int, tolerance: int
-) -> Optional[LyricLine]:
-    """在容差范围内取时间最接近的一行。"""
-    pos = bisect.bisect_left(times, target)
-    best: Optional[LyricLine] = None
-    best_delta = tolerance + 1
-    for i in (pos - 1, pos):
-        if 0 <= i < len(times):
-            delta = abs(times[i] - target)
-            if delta <= tolerance and delta < best_delta:
-                best_delta = delta
-                best = lookup[times[i]]
-    return best
 
 
 def _is_wide_char(code: int) -> bool:

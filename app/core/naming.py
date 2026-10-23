@@ -16,6 +16,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from .trackutil import field
+
 #: Windows 文件名里非法的字符（含控制字符）
 _ILLEGAL_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _WHITESPACE = re.compile(r"\s+")
@@ -96,28 +98,31 @@ def track_values(track: Any, index: int = 0) -> Dict[str, Any]:
     """曲目 → 模板占位符取值（``Track`` 与 QML 传来的字典都能吃）。"""
     from ..sources import SOURCE_NAMES
 
-    source = str(_field(track, "source") or "")
+    source = str(field(track, "source") or "")
     return {
-        "name": str(_field(track, "name") or "").strip(),
-        "singer": str(_field(track, "singer") or "").strip(),
-        "album": str(_field(track, "album") or "").strip(),
+        "name": str(field(track, "name") or "").strip(),
+        "singer": str(field(track, "singer") or "").strip(),
+        "album": str(field(track, "album") or "").strip(),
         "source": SOURCE_NAMES.get(source, source),
         "index": int(index or 0),
     }
 
 
-def suggested_stem(track: Any, template: str = "{singer} - {name}", index: int = 0) -> str:
-    """曲目 + 模板 → 文件名主干（缺歌名时退化成「未命名」而不是空串）。"""
+def suggested_stem(
+    track: Any,
+    template: str = "{singer} - {name}",
+    index: int = 0,
+    *,
+    fallback: str = "",
+) -> str:
+    """曲目 + 模板 → 文件名主干（缺歌名时退化成 ``fallback`` /「未命名」，不是空串）。
+
+    ``fallback`` 给「调用方有更合适的缺省名」时用：存封面要叫「封面」，下载要叫
+    「未命名」—— 但拼法与清洗规则必须是同一套，否则两边又会长出两套。
+    """
     values = track_values(track, index=index)
-    fallback = values.get("name") or values.get("singer") or "未命名"
-    return format_filename(template, values, fallback=str(fallback))
-
-
-def _field(track: Any, key: str) -> Any:
-    """从 ``Track`` / 字典里取字段（QML 传过来的永远是字典）。"""
-    if isinstance(track, dict):
-        return track.get(key)
-    return getattr(track, key, None)
+    name = str(fallback or values.get("name") or values.get("singer") or "未命名")
+    return format_filename(template, values, fallback=name)
 
 
 # ──────────────────────────────────────────────────────────────

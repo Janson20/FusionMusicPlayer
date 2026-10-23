@@ -20,32 +20,11 @@ from ..core.store import (
     Library,
     name_sort_key,
 )
+from ..core.trackutil import as_track
+# 文件夹选择器给的 URL 与手输路径的归一在 paths 里（下载目录也用它）
+from ..paths import normalize_folder
 
 logger = logging.getLogger(__name__)
-
-
-def normalize_folder(value: str) -> str:
-    """把「文件夹选择器给的 ``file://`` URL」或「手输的路径」统一成绝对路径。
-
-    QML 的 ``FolderDialog.selectedFolder`` 是 ``url`` 类型，``toString()`` 出来是
-    ``file:///D:/Music``（中文与空格还会被百分号转义），直接当路径用会 ``isdir`` 失败。
-    手输路径仍然兼容 —— 老配置文件里存的就是纯路径，也还可能有人从别处粘一个进来。
-    """
-    text = str(value or "").strip().strip('"').strip()
-    if not text:
-        return ""
-    if text.lower().startswith("file:"):
-        try:
-            from PySide6.QtCore import QUrl
-
-            local = QUrl(text).toLocalFile()
-            text = local or text
-        except Exception as e:  # pragma: no cover - 依赖 Qt
-            logger.debug("解析文件 URL 失败: %s", e)
-    try:
-        return os.path.abspath(os.path.expanduser(text))
-    except Exception:
-        return text
 
 
 def _match_one(netease, track: Track) -> bool:
@@ -436,7 +415,7 @@ class LibraryController(QObject):
 
     @Slot(str, "QVariant", result=bool)
     def addToPlaylist(self, playlist_id: str, value) -> bool:  # noqa: N802
-        track = value if isinstance(value, Track) else Track.from_dict(value)
+        track = as_track(value)
         if not track or not track.name:
             return False
         added = self._library.add_to_playlist(playlist_id, track)
@@ -450,7 +429,7 @@ class LibraryController(QObject):
 
     @Slot(str, "QVariant", result=bool)
     def removeTrack(self, playlist_id: str, value) -> bool:  # noqa: N802
-        track = value if isinstance(value, Track) else Track.from_dict(value)
+        track = as_track(value)
         if not track:
             return False
         ok = self._library.remove_from_playlist(playlist_id, track.uid)
@@ -469,7 +448,7 @@ class LibraryController(QObject):
 
     @Slot("QVariant", result=bool)
     def toggleFavorite(self, value) -> bool:  # noqa: N802
-        track = value if isinstance(value, Track) else Track.from_dict(value)
+        track = as_track(value)
         if not track or not track.name:
             return False
         state = self._library.toggle_favorite(track)
@@ -485,7 +464,7 @@ class LibraryController(QObject):
         """批量加入「我喜欢」，返回实际新增数量。"""
         added = 0
         for value in items or []:
-            track = value if isinstance(value, Track) else Track.from_dict(value)
+            track = as_track(value)
             if not track or not track.name:
                 continue
             if not self._library.is_favorite(track):
@@ -503,12 +482,12 @@ class LibraryController(QObject):
 
     @Slot("QVariant", result=bool)
     def isFavorite(self, value) -> bool:  # noqa: N802
-        track = value if isinstance(value, Track) else Track.from_dict(value)
+        track = as_track(value)
         return bool(track and self._library.is_favorite(track))
 
     @Slot("QVariant", result="QVariantList")
     def playlistsContaining(self, value):  # noqa: N802
-        track = value if isinstance(value, Track) else Track.from_dict(value)
+        track = as_track(value)
         if not track:
             return []
         return self._library.playlists_containing(track)

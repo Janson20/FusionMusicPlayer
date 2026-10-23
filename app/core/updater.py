@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..lazy import requests  # 延迟导入：requests 本体要 0.4 秒，见 app/lazy.py
+from ..units import human_size as _human_size
 
 logger = logging.getLogger(__name__)
 
@@ -151,18 +152,12 @@ class ReleaseInfo:
 
 
 def human_size(size: int) -> str:
-    """字节数 → 人类可读（下载按钮上要显示）。"""
-    try:
-        value = float(size)
-    except (TypeError, ValueError):
-        return "未知大小"
-    if value <= 0:
-        return "未知大小"
-    for unit in ("B", "KB", "MB", "GB"):
-        if value < 1024 or unit == "GB":
-            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
-        value /= 1024
-    return f"{value:.1f} GB"
+    """字节数 → 人类可读（下载按钮上要显示）。
+
+    换算与别处同一份（:func:`app.units.human_size`），只有「拿不到」的措辞是本页
+    特有的：更新包大小不知道时写 "0 B"，用户会以为包是空的。
+    """
+    return _human_size(size, zero_text="未知大小")
 
 
 def pick_asset(assets, kind: str, version: str = "") -> Optional[ReleaseAsset]:

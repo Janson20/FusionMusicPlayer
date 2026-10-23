@@ -6,10 +6,7 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import os
-import tempfile
 import threading
 import time
 import uuid
@@ -17,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
-from .. import paths
+from .. import jsonio, paths
 from .models import Track, normalize_singers
 
 def _migrate_singers(tracks: Iterable[Track]) -> List[Track]:
@@ -81,33 +78,17 @@ def name_sort_key(title: str) -> str:
 # ──────────────────────────────────────────────────────────────
 
 def atomic_write_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=1)
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    """曲库 / 会话的写盘（缩进 1：人可读，又不至于把上千首歌撑成两倍体积）。
+
+    实现在 :func:`app.jsonio.atomic_write_json`，这里只定死本模块的文件格式。
+    """
+    jsonio.atomic_write_json(path, data, indent=1)
+
 
 def read_json(path: Path, default: Any) -> Any:
     """读 JSON；缺文件返回 ``default``，解析失败把原文件挪成 ``*.corrupt``。"""
-    if not path.exists():
-        return default
-    try:
-        raw = path.read_text(encoding="utf-8")
-        return json.loads(raw) if raw.strip() else default
-    except Exception as e:
-        logger.warning("读取 %s 失败，已备份为 .corrupt: %s", path.name, e)
-        try:
-            path.replace(path.with_suffix(path.suffix + ".corrupt"))
-        except Exception:
-            pass
-        return default
+    return jsonio.read_json(path, default)
+
 
 # ──────────────────────────────────────────────────────────────
 # 歌单

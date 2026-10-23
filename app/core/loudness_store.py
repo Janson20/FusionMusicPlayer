@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 from . import loudness
 from .loudness import AnalysisResult
 from .. import paths
+from ..jsonio import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -187,13 +188,8 @@ class LoudnessStore:
                 "entries": {uid: m.to_dict() for uid, m in self._entries.items()},
             }
             try:
-                self._path.parent.mkdir(parents=True, exist_ok=True)
-                tmp = self._path.with_suffix(".tmp")
-                tmp.write_text(
-                    json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-                    encoding="utf-8",
-                )
-                tmp.replace(self._path)
+                # 紧凑格式：上万条目的缓存，缩进会让文件大出一倍
+                atomic_write_json(self._path, payload, separators=(",", ":"))
                 self._dirty = False
                 return True
             except Exception as e:

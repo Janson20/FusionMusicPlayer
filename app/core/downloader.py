@@ -30,9 +30,11 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from . import download_writer, naming
 from .models import LOCAL_SOURCE, Track
+from .trackutil import as_track, field
 from ..lazy import requests
 from ..sources.base import QualityLevel
 from .. import paths
+from ..units import human_size, to_int
 
 logger = logging.getLogger(__name__)
 
@@ -64,12 +66,24 @@ STATE_TEXTS: Dict[str, str] = {
 }
 
 # ── 音质 ────────────────────────────────────────────────────────
+#: 「自动」档：不指定档位，按该曲目可用的最高档取（见 :func:`quality_ladder`）
+AUTO_QUALITY = "auto"
+AUTO_QUALITY_LABEL = "自动（按可用最高音质）"
+
 QUALITY_LABELS: Dict[str, str] = {
     "flac24bit": "Hi-Res 母带",
     "flac": "无损 FLAC",
     "320k": "高品质 320K",
     "128k": "标准 128K",
 }
+
+#: 同名文件处理策略的中文名（键与 :data:`app.core.naming.DUPLICATE_MODES` 一致）
+DUPLICATE_LABELS: Dict[str, str] = {
+    "rename": "自动加序号（1）",
+    "skip": "跳过已存在的",
+    "overwrite": "覆盖同名文件",
+}
+
 #: 估算体积用的码率（kbps）。无损按实测常见值取，只用于「预计体积」与磁盘预检查。
 QUALITY_BITRATES: Dict[str, int] = {"flac24bit": 2300, "flac": 900, "320k": 320, "128k": 128}
 
@@ -118,6 +132,24 @@ def quality_label(quality: str) -> str:
     return QUALITY_LABELS.get(str(quality or "").strip().lower(), str(quality or ""))
 
 
+def quality_choices(include_auto: bool = True) -> List[Dict[str, str]]:
+    """给下拉框用的音质选项（``[{id, name}]``）。
+
+    设置页的「默认音质」与下载对话框的档位菜单都从这里取 —— 原先两张表各写一份
+    文案，改一处忘一处就会让两处显示不同的名字。
+    """
+    out: List[Dict[str, str]] = []
+    if include_auto:
+        out.append({"id": AUTO_QUALITY, "name": AUTO_QUALITY_LABEL})
+    out.extend({"id": quality, "name": QUALITY_LABELS[quality]} for quality in QUALITY_ORDER)
+    return out
+
+
+def duplicate_choices() -> List[Dict[str, str]]:
+    """同名文件处理的选项（设置页与下载对话框共用一份文案）。"""
+    return [{"id": mode, "name": DUPLICATE_LABELS[mode]} for mode in naming.DUPLICATE_MODES]
+
+
 def parse_size(value: Any) -> int:
     """音源给的体积 → 字节数。
 
@@ -156,7 +188,7 @@ def estimate_size(track: Any, quality: str) -> int:
         if size > 0:
             return size
     try:
-        interval = int(_field(track, "interval") or 0)
+        interval = int(field(track, "interval") or 0)
     except (TypeError, ValueError):
         interval = 0
     if interval <= 0:
@@ -185,38 +217,17 @@ def quality_options(track: Any = None) -> List[Dict[str, Any]]:
     return out
 
 
-def human_size(size: Any) -> str:
-    """字节数 → 人话（通知、任务列表里显示体积用）。"""
-    try:
-        value = float(size)
-    except (TypeError, ValueError):
-        return "0 B"
-    if value <= 0:
-        return "0 B"
-    for unit in ("B", "KB", "MB", "GB"):
-        if value < 1024 or unit == "GB":
-            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
-        value /= 1024
-    return f"{value:.1f} GB"
-
-
 def _types_of(track: Any) -> List[Dict[str, Any]]:
     """取可用音质列表（``Track`` / ``MusicInfo`` / QML 字典都能吃）。"""
-    raw = _field(track, "types")
+    raw = field(track, "types")
     if raw is None:
-        raw = _field(track, "type_detail")
+        raw = field(track, "type_detail")
     if isinstance(raw, dict):
         return [{"type": key, **(value if isinstance(value, dict) else {})}
                 for key, value in raw.items()]
     if isinstance(raw, (list, tuple)):
         return [dict(entry) for entry in raw if isinstance(entry, dict)]
     return []
-
-
-def _field(source: Any, key: str) -> Any:
-    if isinstance(source, dict):
-        return source.get(key)
-    return getattr(source, key, None)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -538,7 +549,9 @@ class DownloadManager:
     def enqueue(self, tracks: Iterable[Any], options: DownloadOptions) -> List[DownloadItem]:
         """把若干曲目排进队列，返回新建的任务（顺序与传入一致）。"""
         new_items: List[DownloadItem] = []
-        prepared = [t for t in (_as_track(value) for value in tracks or []) if t is not None]
+        prepared = [
+            t for t in (as_track(value, strict=True) for value in tracks or []) if t is not None
+        ]
         with self._lock:
             for index, track in enumerate(prepared, start=1):
                 self._seq += 1
@@ -826,7 +839,7 @@ class DownloadManager:
                 raise _UrlExpired(f"HTTP {status}")
             if status >= 400:
                 raise requests.HTTPError(f"HTTP {status}", response=resp)
-            total = _to_int(resp.headers.get("Content-Length"))
+            total = to_int(resp.headers.get("Content-Length"), minimum=0)
             item.tick(0, total)
             received = 0
             with open(part, "wb") as handle:
@@ -937,13 +950,6 @@ def _unlink(path: Path) -> None:
         pass
 
 
-def _to_int(value: Any) -> int:
-    try:
-        return max(0, int(float(value)))
-    except (TypeError, ValueError):
-        return 0
-
-
 def _describe_os_error(error: OSError) -> str:
     import errno
 
@@ -966,19 +972,3 @@ def _describe_network_error(error: Exception) -> str:
         return "连接被中断（已重试 3 次）"
     detail = f"{error.__class__.__name__} {text}".strip()
     return f"下载失败：{detail[:120]}"
-
-
-def _as_track(value: Any) -> Optional[Track]:
-    """QML 字典 / ``Track`` / ``MusicInfo`` → ``Track``（认不出来返回 ``None``）。"""
-    if isinstance(value, Track):
-        return value
-    if isinstance(value, dict):
-        track = Track.from_dict(value)
-        return track if (track.songmid or track.name) else None
-    if hasattr(value, "songmid") and hasattr(value, "name"):
-        try:
-            return Track.from_music_info(value)
-        except Exception:
-            return None
-    return None
-

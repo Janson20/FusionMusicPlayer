@@ -21,6 +21,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+from .trackutil import field
+
 logger = logging.getLogger(__name__)
 
 #: ``.lrc`` 的编码：带 BOM 的 UTF-8
@@ -91,7 +93,7 @@ def tag_values(track: Any, track_number: int = 0) -> Dict[str, str]:
 
 def publish_year(track: Any) -> str:
     """发布时间（毫秒时间戳）→ 年份字符串；拿不到返回空串。"""
-    raw = _field(track, "publish_time")
+    raw = field(track, "publish_time")
     try:
         stamp = int(raw or 0)
     except (TypeError, ValueError):
@@ -376,11 +378,5 @@ def fetch_cover(track: Any) -> Optional[Tuple[bytes, str]]:
         return None
 
 
-def _field(track: Any, key: str) -> Any:
-    if isinstance(track, dict):
-        return track.get(key)
-    return getattr(track, key, None)
-
-
 def _text(track: Any, key: str) -> str:
-    return str(_field(track, key) or "").strip()
+    return str(field(track, key) or "").strip()

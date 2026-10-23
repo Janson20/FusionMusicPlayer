@@ -3,28 +3,18 @@
 from __future__ import annotations
 
 import logging
-import os
-import subprocess
-import sys
 import threading
 from pathlib import Path
 from typing import List
 
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
-from .. import paths
+from .. import paths, shellopen
 from ..config import DEFAULTS
-from ..core import backgrounds, cache
+from ..core import backgrounds, cache, downloader
+from ..units import human_size
 
 logger = logging.getLogger(__name__)
-
-QUALITY_OPTIONS = [
-    {"id": "auto", "name": "自动（按可用最高音质）"},
-    {"id": "flac24bit", "name": "Hi-Res 母带"},
-    {"id": "flac", "name": "无损 FLAC"},
-    {"id": "320k", "name": "高品质 320K"},
-    {"id": "128k", "name": "标准 128K"},
-]
 
 THEME_OPTIONS = [
     {"id": "auto", "name": "跟随系统"},
@@ -105,12 +95,12 @@ class SettingsController(QObject):
 
     @Property(str, notify=changed)
     def downloadDir(self) -> str:  # noqa: N802
-        configured = str(self._config.get("storage.download_dir", "") or "")
-        return configured or str(paths.program_dir() / "downloads")
+        return downloader.default_directory(self._config)
 
     @Property("QVariantList", constant=True)
     def qualityOptions(self):  # noqa: N802
-        return QUALITY_OPTIONS
+        """音质选项（与下载对话框同一份文案，见 :func:`downloader.quality_choices`）。"""
+        return downloader.quality_choices()
 
     @Property("QVariantList", constant=True)
     def themeOptions(self):  # noqa: N802
@@ -274,18 +264,13 @@ class SettingsController(QObject):
 
     @Property("QVariantList", constant=True)
     def downloadDuplicateOptions(self):  # noqa: N802
-        return [
-            {"id": "rename", "name": "自动加序号 (1)"},
-            {"id": "skip", "name": "跳过已存在的"},
-            {"id": "overwrite", "name": "覆盖同名文件"},
-        ]
+        """同名文件处理的选项（与下载对话框同一份文案）。"""
+        return downloader.duplicate_choices()
 
     @Slot(str)
     def setDownloadDir(self, url: str) -> None:  # noqa: N802
         """设置下载目录（``file://`` URL 或普通路径）。目录建不出来时明确报错。"""
-        from .library import normalize_folder
-
-        path = normalize_folder(url)
+        path = paths.normalize_folder(url)
         if not path:
             return
         try:
@@ -441,7 +426,7 @@ class SettingsController(QObject):
         入参是 QML ``FileDialog`` 给的 URL（``file:///D:/...``）。入库失败只报错，
         不动原有配置 —— 用户选错一个文件不该把现有背景弄没。
         """
-        path = self._local_path(url)
+        path = paths.from_file_url(url)
         if not path:
             self.errorOccurred.emit("没有选择图片文件")
             return
@@ -477,18 +462,6 @@ class SettingsController(QObject):
         backgrounds.prune()
         self.changed.emit()
         self.message.emit("已恢复为纯色背景")
-
-    @staticmethod
-    def _local_path(url: str) -> str:
-        """把 QML 传过来的 URL/路径统一成本地路径。"""
-        text = str(url or "").strip()
-        if not text:
-            return ""
-        if text.startswith("file:"):
-            from PySide6.QtCore import QUrl
-
-            return QUrl(text).toLocalFile()
-        return text
 
     @Property("QVariant", notify=changed)
     def allSettings(self):  # noqa: N802
@@ -546,10 +519,10 @@ class SettingsController(QObject):
             raw = {"cover": 0, "lyric": 0, "media": 0}
         total = sum(raw.values())
         return {
-            "cover": _human(raw.get("cover", 0)),
-            "lyric": _human(raw.get("lyric", 0)),
-            "media": _human(raw.get("media", 0)),
-            "total": _human(total),
+            "cover": human_size(raw.get("cover", 0)),
+            "lyric": human_size(raw.get("lyric", 0)),
+            "media": human_size(raw.get("media", 0)),
+            "total": human_size(total),
             "totalBytes": total,
         }
 
@@ -614,7 +587,7 @@ class SettingsController(QObject):
         elif removed == 0:
             self.message.emit("没有发现内容重复的缓存文件")
         else:
-            self.message.emit(f"已删除 {removed} 个重复文件，释放 {_human(freed)}")
+            self.message.emit(f"已删除 {removed} 个重复文件，释放 {human_size(freed)}")
 
     # ── 音量均衡 ────────────────────────────────────────────
 
@@ -658,7 +631,7 @@ class SettingsController(QObject):
             "failed": int(raw.get("failed", 0) or 0),
             "pending": int(raw.get("pending", 0) or 0),
             "total": int(raw.get("total", 0) or 0),
-            "size": _human(int(raw.get("bytes", 0) or 0)),
+            "size": human_size(int(raw.get("bytes", 0) or 0)),
             "avgLoudness": f"{avg:.1f} LUFS" if isinstance(avg, (int, float)) else "",
             "enabled": bool(raw.get("enabled", self.equalize)),
         }
@@ -687,13 +660,8 @@ class SettingsController(QObject):
     def openPath(self, path: str) -> None:  # noqa: N802
         target = path or str(paths.data_dir())
         try:
-            if sys.platform == "win32":
-                os.startfile(target)  # type: ignore[attr-defined]
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", target])
-            else:
-                subprocess.Popen(["xdg-open", target])
-        except Exception as e:
+            shellopen.open_path(target)
+        except OSError as e:
             logger.warning("打开路径失败: %s", e)
             self.errorOccurred.emit(f"无法打开路径：{target}")
 
@@ -716,14 +684,3 @@ class SettingsController(QObject):
     @Slot(result="QVariant")
     def defaults(self):  # noqa: N802
         return DEFAULTS
-
-def _human(size: int) -> str:
-    try:
-        s = float(size)
-    except (TypeError, ValueError):
-        return "0 B"
-    for unit in ("B", "KB", "MB", "GB"):
-        if s < 1024 or unit == "GB":
-            return f"{s:.0f} {unit}" if unit == "B" else f"{s:.1f} {unit}"
-        s /= 1024
-    return f"{s:.1f} GB"

@@ -16,9 +16,7 @@ Windows 上正在运行的 ``exe`` / ``DLL`` 是换不掉的，所以自动更�
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 import shutil
 import subprocess
 import sys
@@ -29,6 +27,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .updater import KIND_ONEDIR, KIND_ONEFILE, KIND_SOURCE
 from .. import paths
+from ..jsonio import atomic_write_json, read_json
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +44,6 @@ KEEP_BACKUPS = 1
 STAGED_EXE_NAME = "FusionMusicPlayer.exe"
 #: 脚本文件名
 SCRIPT_NAME = "apply_update.ps1"
-
-
-def updates_dir() -> Path:
-    return paths.updates_dir()
 
 
 def log_file() -> Path:
@@ -69,19 +64,9 @@ def can_auto_install(kind: str) -> Tuple[bool, str]:
     if not getattr(sys, "frozen", False):
         return False, "当前不是打包版本，请到发布页手动下载"
     target = paths.program_dir()
-    if not _writable(target):
+    if not paths.is_writable(target):
         return False, f"程序目录不可写（{target}），请手动下载后替换"
     return True, ""
-
-
-def _writable(path: Path) -> bool:
-    try:
-        probe = path / f".update_probe_{os.getpid()}"
-        probe.write_bytes(b"")
-        probe.unlink()
-        return True
-    except OSError:
-        return False
 
 
 # ──────────────────────────────────────────────────────────────
@@ -342,7 +327,7 @@ def build_script(staged_exe: str = STAGED_EXE_NAME) -> str:
 
 def write_script(content: str, path: Optional[Path] = None) -> Path:
     """把脚本写到 ``data/updates/`` 下（不是程序目录：它不会被更新覆盖）。"""
-    target = Path(path) if path else updates_dir() / SCRIPT_NAME
+    target = Path(path) if path else paths.updates_dir() / SCRIPT_NAME
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8-sig")   # 带 BOM：PS 5.1 才认 UTF-8
     return target
@@ -378,12 +363,16 @@ def launch_script(script_path: Path, *, kind: str, pid: int, install_dir: Path,
 
 
 def write_pending(data: Dict[str, Any]) -> bool:
+    """写下「正在更新」的标记。
+
+    **必须原子**：这份标记是判断「上次更新到底成没成」的唯一依据，写到一半断电
+    就会留下半个 JSON，下次启动读到坏文件、以为更新没做过（旧版本正是直接
+    ``write_text``，见 app/jsonio.py 的说明）。
+    """
     try:
-        target = updates_dir() / PENDING_FILE
-        target.parent.mkdir(parents=True, exist_ok=True)
         payload = dict(data)
         payload.setdefault("at", time.time())
-        target.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        atomic_write_json(paths.updates_dir() / PENDING_FILE, payload)
         return True
     except OSError as e:
         logger.debug("写入更新标记失败: %s", e)
@@ -391,20 +380,13 @@ def write_pending(data: Dict[str, Any]) -> bool:
 
 
 def read_pending() -> Optional[Dict[str, Any]]:
-    try:
-        target = updates_dir() / PENDING_FILE
-        if not target.exists():
-            return None
-        data = json.loads(target.read_text(encoding="utf-8") or "{}")
-        return data if isinstance(data, dict) else None
-    except Exception as e:
-        logger.debug("读取更新标记失败: %s", e)
-        return None
+    data = read_json(paths.updates_dir() / PENDING_FILE, None)
+    return data if isinstance(data, dict) else None
 
 
 def clear_pending() -> None:
     try:
-        (updates_dir() / PENDING_FILE).unlink(missing_ok=True)
+        (paths.updates_dir() / PENDING_FILE).unlink(missing_ok=True)
     except OSError:
         pass
 
@@ -423,7 +405,7 @@ def read_log_tail(lines: int = 12) -> str:
 
 def prune_stale() -> None:
     """清掉旧的暂存目录与备份（保留最近 :data:`KEEP_BACKUPS` 份备份）。"""
-    base = updates_dir()
+    base = paths.updates_dir()
     if not base.exists():
         return
     for prefix, keep in ((STAGING_PREFIX, 0), (BACKUP_PREFIX, KEEP_BACKUPS)):
@@ -441,7 +423,7 @@ def prune_stale() -> None:
 
 def cleanup_stale_downloads() -> None:
     """删掉上次没下完的 ``.part`` 残留。"""
-    base = updates_dir()
+    base = paths.updates_dir()
     if not base.exists():
         return
     for part in base.glob("*.part"):

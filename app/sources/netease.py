@@ -21,8 +21,16 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .base import MusicInfo, duration_matches
 from .wy import NetEaseMusicSource
+from ..units import to_int
 
 logger = logging.getLogger(__name__)
+
+#: 会员名。vipCode 表（本模块）与账号页的 vipType 表（app/core/account.py）
+#: 引用同一份文案 —— 两处各写一遍时，「黑胶SVIP」在一处、另一处是「SVIP」，
+#: 用户在设置页与账号卡片里看到的等级名称就对不上了。
+VIP_NAME_BLACK = "黑胶VIP"
+VIP_NAME_SVIP = "黑胶SVIP"
+VIP_NAME_PACKAGE = "音乐包"
 
 
 class NetEaseSource(NetEaseMusicSource):
@@ -57,9 +65,9 @@ class NetEaseSource(NetEaseMusicSource):
 
     # vipCode -> 会员名
     VIP_CODE_LABELS = {
-        100: "黑胶VIP",
-        220: "音乐包",
-        300: "黑胶SVIP",
+        100: VIP_NAME_BLACK,
+        220: VIP_NAME_PACKAGE,
+        300: VIP_NAME_SVIP,
         400: "专辑VIP",
         500: "有声书VIP",
     }
@@ -84,11 +92,11 @@ class NetEaseSource(NetEaseMusicSource):
             # 未登录时这两个字段都是 null
             return None
 
-        user_id = _to_int(profile.get("userId")) or _to_int(account.get("id"))
+        user_id = to_int(profile.get("userId")) or to_int(account.get("id"))
 
         # account.vipType 是标量，profile.vipType 是位掩码，两者含义不同，
         # 标量优先（与官方客户端一致）
-        vip_type = _to_int(account.get("vipType")) or _to_int(profile.get("vipType"))
+        vip_type = to_int(account.get("vipType")) or to_int(profile.get("vipType"))
 
         vip = self._fetch_vip_info()
         if vip:
@@ -145,7 +153,7 @@ class NetEaseSource(NetEaseMusicSource):
             node = data.get(key)
             if not isinstance(node, dict) or not node.get("vipCode"):
                 return None
-            expire = _to_int(node.get("expireTime"))
+            expire = to_int(node.get("expireTime"))
             # expireTime 为 0/缺失时不做判定，避免把永久权益误杀
             if expire and expire < int(time.time() * 1000):
                 return None
@@ -161,15 +169,15 @@ class NetEaseSource(NetEaseMusicSource):
         active_codes = {}
         for key in ("redplus", "associator", "musicPackage", "albumVip", "voiceBookVip"):
             node = _active(key)
-            if node and _to_int(node.get("vipLevel")) > 0:
-                active_codes[key] = _to_int(node.get("vipCode"))
+            if node and to_int(node.get("vipLevel")) > 0:
+                active_codes[key] = to_int(node.get("vipCode"))
 
         return {
             "is_svip": redplus is not None,
             "has_black_vip": associator is not None or redplus is not None,
             "has_music_package": music_package is not None,
-            "red_vip_level": _to_int(data.get("redVipLevel")),
-            "red_vip_annual_count": _to_int(data.get("redVipAnnualCount")),
+            "red_vip_level": to_int(data.get("redVipLevel")),
+            "red_vip_annual_count": to_int(data.get("redVipAnnualCount")),
             "active_codes": active_codes,
         }
 
@@ -205,12 +213,6 @@ def vip_flags_from_type(vip_type: int) -> Tuple[bool, bool, bool]:
     has_music_package = bool(v & 1) or v == 1
     return is_svip, has_black_vip, has_music_package
 
-
-def _to_int(value) -> int:
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
 
 def _wy():
     from . import wy_source
@@ -731,10 +733,10 @@ def search_artists(keyword: str, limit: int = 10) -> List[Dict]:
                     "name": str(item.get("name") or ""),
                     "cover": str(item.get("picUrl") or ""),
                     "alias": [str(a) for a in (item.get("alias") or [])],
-                    "music_size": _to_int(item.get("musicSize")),
-                    "album_size": _to_int(item.get("albumSize")),
-                    "mv_size": _to_int(item.get("mvSize")),
-                    "fans_size": _to_int(item.get("fansSize")),
+                    "music_size": to_int(item.get("musicSize")),
+                    "album_size": to_int(item.get("albumSize")),
+                    "mv_size": to_int(item.get("mvSize")),
+                    "fans_size": to_int(item.get("fansSize")),
                 }
             )
         except Exception:
@@ -762,8 +764,8 @@ def search_playlists(keyword: str, limit: int = 6) -> List[Dict]:
                     "id": str(item.get("id") or ""),
                     "name": str(item.get("name") or ""),
                     "cover": str(item.get("coverImgUrl") or ""),
-                    "track_count": _to_int(item.get("trackCount")),
-                    "play_count": _to_int(item.get("playCount")),
+                    "track_count": to_int(item.get("trackCount")),
+                    "play_count": to_int(item.get("playCount")),
                     "creator": str((item.get("creator") or {}).get("nickname") or ""),
                 }
             )
@@ -784,7 +786,7 @@ def pick_artist(artists: List[Dict], name: str) -> Dict:
         return dict(artists[0])
 
     def _fans(a: Dict) -> int:
-        return _to_int(a.get("fans_size"))
+        return to_int(a.get("fans_size"))
 
     exact = [a for a in artists if str(a.get("name", "")).lower() == name]
     if exact:
@@ -847,10 +849,10 @@ def _artist_page_uncached(artist_id: str, name: str) -> Dict:
         "cover": str(artist.get("picUrl") or matched.get("cover") or ""),
         "alias": [str(a) for a in (artist.get("alias") or matched.get("alias") or [])],
         "brief_desc": str(artist.get("briefDesc") or ""),
-        "music_size": _to_int(artist.get("musicSize")) or _to_int(matched.get("music_size")),
-        "album_size": _to_int(artist.get("albumSize")) or _to_int(matched.get("album_size")),
-        "mv_size": _to_int(artist.get("mvSize")) or _to_int(matched.get("mv_size")),
-        "fans_size": _to_int(matched.get("fans_size")),
+        "music_size": to_int(artist.get("musicSize")) or to_int(matched.get("music_size")),
+        "album_size": to_int(artist.get("albumSize")) or to_int(matched.get("album_size")),
+        "mv_size": to_int(artist.get("mvSize")) or to_int(matched.get("mv_size")),
+        "fans_size": to_int(matched.get("fans_size")),
         "hot_songs": _parse_songs(src, resp.get("hotSongs") or []),
     }
     return page
@@ -907,8 +909,8 @@ def search_albums(keyword: str, limit: int = 10) -> List[Dict]:
                     "cover": str(item.get("picUrl") or ""),
                     "artist_id": str(artist.get("id") or ""),
                     "artist_name": str(artist.get("name") or ""),
-                    "size": _to_int(item.get("size")),
-                    "publish_time": _to_int(item.get("publishTime")),
+                    "size": to_int(item.get("size")),
+                    "publish_time": to_int(item.get("publishTime")),
                     "company": str(item.get("company") or ""),
                 }
             )
@@ -926,14 +928,14 @@ def pick_album(albums: List[Dict], name: str) -> Dict:
     exact = [a for a in albums if str(a.get("name", "")).lower() == wanted]
     if exact:
         # 同名的多张里挑曲目多的（通常才是「原版专辑」）
-        return dict(max(exact, key=lambda a: _to_int(a.get("size"))))
+        return dict(max(exact, key=lambda a: to_int(a.get("size"))))
     loose = [
         a
         for a in albums
         if wanted in str(a.get("name", "")).lower() or str(a.get("name", "")).lower() in wanted
     ]
     if loose:
-        return dict(max(loose, key=lambda a: _to_int(a.get("size"))))
+        return dict(max(loose, key=lambda a: to_int(a.get("size"))))
     return dict(albums[0])
 
 def album_page(album_id: str = "", name: str = "", artist: str = "") -> Dict:
@@ -985,7 +987,7 @@ def _album_page_uncached(album_id: str, name: str, artist: str) -> Dict:
     names = [str(a.get("name") or "") for a in artists if isinstance(a, dict)]
     names = [n for n in names if n]
 
-    publish_ms = _to_int(album.get("publishTime"))
+    publish_ms = to_int(album.get("publishTime"))
     page = {
         "id": str(album.get("id") or album_id),
         "name": str(album.get("name") or name or ""),
@@ -1005,7 +1007,7 @@ def _album_page_uncached(album_id: str, name: str, artist: str) -> Dict:
         ),
         # 「录音室版 / 现场版」这类发行版本；歌曲百科要用（见 song_release）
         "version": str(album.get("subType") or ""),
-        "size": _to_int(album.get("size")),
+        "size": to_int(album.get("size")),
         "description": str(album.get("description") or album.get("briefDesc") or ""),
         "songs": _parse_songs(src, resp.get("songs") or []),
     }

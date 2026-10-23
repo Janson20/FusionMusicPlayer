@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from . import paths
+from .jsonio import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -204,12 +205,8 @@ class Config:
     def save(self) -> None:
         with self._lock:
             try:
-                self._path.parent.mkdir(parents=True, exist_ok=True)
-                tmp = self._path.with_suffix(".tmp")
-                tmp.write_text(
-                    json.dumps(self._data, ensure_ascii=False, indent=2), encoding="utf-8"
-                )
-                tmp.replace(self._path)
+                # 原子写 + indent=2：配置是给人看、也给手改的（见 app/jsonio.py）
+                atomic_write_json(self._path, self._data, indent=2)
             except Exception as e:
                 logger.error("配置保存失败: %s", e)
 

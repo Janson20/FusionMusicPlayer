@@ -12,7 +12,9 @@ from PySide6.QtGui import QGuiApplication
 
 from .. import paths
 from ..core import covers
+from ..core.trackutil import as_dict
 from ..sources import SOURCE_META
+from ..units import human_size
 
 logger = logging.getLogger(__name__)
 
@@ -323,7 +325,7 @@ class AppController(QObject):
         扩展名是按封面地址**猜**的（``.jpg`` 起步），真正落盘时会按文件头纠正，
         见 :func:`app.core.covers.save_cover`。
         """
-        info = covers.as_dict(track)
+        info = as_dict(track)
         suffix = covers.suggest_suffix(info)
         name = covers.suggest_stem(info) + suffix
         folder = self._cover_dir()
@@ -337,7 +339,7 @@ class AppController(QObject):
     @Slot("QVariant", str)
     def saveCover(self, track, url: str) -> None:  # noqa: N802
         """把曲目封面另存到 ``url``（QML FileDialog 给的 ``file://`` URL）。"""
-        info = covers.as_dict(track)
+        info = as_dict(track)
         if not info:
             self.error("没有可保存的封面")
             return
@@ -361,7 +363,7 @@ class AppController(QObject):
             self._config.set("storage.cover_dir", str(Path(path).parent))
         except Exception as e:
             logger.debug("记住封面保存目录失败: %s", e)
-        self._cover_emitter.saved.emit(True, f"封面已保存：{path}（{_human_size(size)}）")
+        self._cover_emitter.saved.emit(True, f"封面已保存：{path}（{human_size(size)}）")
 
     @Slot(bool, str)
     def _on_cover_saved(self, ok: bool, message: str) -> None:
@@ -501,14 +503,3 @@ class AppController(QObject):
         self._config.save()
 
 
-def _human_size(size: int) -> str:
-    """字节数 → 人话（通知里显示封面体积用）。"""
-    try:
-        value = float(size)
-    except (TypeError, ValueError):
-        return "0 B"
-    for unit in ("B", "KB", "MB"):
-        if value < 1024 or unit == "MB":
-            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
-        value /= 1024
-    return f"{value:.1f} MB"

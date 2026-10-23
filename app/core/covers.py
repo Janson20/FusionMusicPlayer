@@ -24,8 +24,10 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from . import cache
+from . import cache, naming
 from .naming import sanitize_filename as _sanitize_filename
+from .trackutil import as_dict
+from ..paths import from_file_url
 
 logger = logging.getLogger(__name__)
 
@@ -63,19 +65,12 @@ _BILIBILI_SUFFIX = re.compile(r"@[^/]*$")
 
 
 def suggest_stem(track: Any) -> str:
-    """默认文件名主干：``歌手 - 歌名``（缺哪边就用哪边）。"""
-    info = as_dict(track)
-    singer = str(info.get("singer") or "").strip()
-    name = str(info.get("name") or "").strip()
-    if singer and name:
-        stem = f"{singer} - {name}"
-    elif name:
-        stem = name
-    elif singer:
-        stem = singer
-    else:
-        stem = "封面"
-    return sanitize_filename(stem)
+    """默认文件名主干：``歌手 - 歌名``（缺哪边就用哪边，都没有叫「封面」）。
+
+    拼法与下载同源（:func:`app.core.naming.suggested_stem`），只是缺省名不同 ——
+    存封面不该叫「未命名.mp3」那种名字。
+    """
+    return naming.suggested_stem(as_dict(track), "{singer} - {name}", fallback="封面")
 
 
 def suggest_suffix(track: Any) -> str:
@@ -83,7 +78,7 @@ def suggest_suffix(track: Any) -> str:
     info = as_dict(track)
     url = str(info.get("cover") or "")
     if url.startswith("file:"):
-        url = _local_path(url)
+        url = from_file_url(url)
     suffix = Path(url.split("?")[0].split("#")[0]).suffix.lower()
     if suffix in _IMAGE_SUFFIXES:
         return ".jpg" if suffix == ".jpeg" else suffix
@@ -140,7 +135,7 @@ def resolve_cover(track: Any) -> Tuple[bytes, str]:
         raise CoverError("这首歌没有可保存的封面")
 
     if url.startswith("file:"):
-        path = _local_path(url)
+        path = from_file_url(url)
         try:
             data = Path(path).read_bytes()
         except OSError as e:
@@ -195,7 +190,7 @@ def save_cover(track: Any, destination: str) -> Tuple[str, int]:
     而图其实是 jpg 时，写出来的就得是 ``.jpg``，否则双击打不开）。
     同目录先写 ``*.part`` 再原子替换，中途失败不会留下半个文件。
     """
-    target = Path(_local_path(str(destination or "").strip()))
+    target = Path(from_file_url(str(destination or "").strip()))
     if not str(target) or str(target) == ".":
         raise CoverError("没有选择保存位置")
     if target.is_dir():
@@ -220,45 +215,3 @@ def save_cover(track: Any, destination: str) -> Tuple[str, int]:
         logger.warning("写入封面失败 %s: %s", target, e)
         raise CoverError(f"写入失败：{e}") from e
     return str(target), len(data)
-
-
-def as_dict(track: Any) -> Dict[str, Any]:
-    """接受 QML 传来的曲目字典 / :class:`Track` / JSON 串，统一成字典。"""
-    if track is None:
-        return {}
-    if isinstance(track, dict):
-        return dict(track)
-    for attr in ("to_dict", "toDict"):
-        method = getattr(track, attr, None)
-        if callable(method):
-            try:
-                value = method()
-                if isinstance(value, dict):
-                    return dict(value)
-            except Exception:
-                pass
-    if isinstance(track, str):
-        import json
-
-        try:
-            value = json.loads(track)
-            return dict(value) if isinstance(value, dict) else {}
-        except (ValueError, TypeError):
-            return {}
-    return {}
-
-
-def _local_path(url: str) -> str:
-    """``file://`` URL → 本地路径（普通路径原样返回）。
-
-    QML 的 ``FileDialog.selectedFile`` 给的是 URL（``file:///D:/x/y.jpg``）：
-    直接塞给 ``Path`` 会得到 ``file:\\D:\\x\\y.jpg`` 这种四不像，
-    落盘时报 ``WinError 123``（实测踩过）。
-    """
-    text = str(url or "").strip()
-    if not text.startswith("file:"):
-        return text
-    from PySide6.QtCore import QUrl
-
-    local = QUrl(text).toLocalFile()
-    return local or text

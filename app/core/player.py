@@ -31,6 +31,7 @@ from . import session as play_session
 from .lyrics import Lyrics
 from .models import Track, format_duration
 from .queue import PlayMode, mode_from_name, PLAY_MODE_LABELS, PLAY_MODE_NAMES
+from .trackutil import as_track
 from .resolver import Resolved, resolve
 from .store import Library
 from ..config import Config
@@ -361,7 +362,7 @@ class PlayerEngine(QObject):
     @Slot("QVariant")
     def playTrack(self, value):  # noqa: N802
         """播放单曲（不入队）：用「单曲」上下文替换队列。"""
-        track = _coerce_track(value)
+        track = as_track(value)
         if track is None:
             return
         self._queue.set_tracks([track], 0)
@@ -370,7 +371,7 @@ class PlayerEngine(QObject):
     @Slot("QVariant", int)
     def playTrackInList(self, value, index: int):  # noqa: N802
         """以给定列表为上下文，从 ``index`` 开始播放。"""
-        tracks = [_coerce_track(t) for t in (value or [])]
+        tracks = [as_track(t) for t in (value or [])]
         tracks = [t for t in tracks if t is not None]
         if not tracks:
             return
@@ -380,7 +381,7 @@ class PlayerEngine(QObject):
     @Slot("QVariant")
     def replaceQueue(self, value):  # noqa: N802
         """替换队列但**不**立即播放（用于「播放全部」前的准备）。"""
-        tracks = [_coerce_track(t) for t in (value or [])]
+        tracks = [as_track(t) for t in (value or [])]
         self._queue.set_tracks([t for t in tracks if t is not None], 0)
 
     @Slot(int, "QVariant")
@@ -516,7 +517,7 @@ class PlayerEngine(QObject):
     @Slot("QVariant")
     def playNextTrack(self, value) -> None:  # noqa: N802
         """把曲目插到「下一首播放」。"""
-        track = _coerce_track(value)
+        track = as_track(value)
         if track is None or not track.name:
             return
         index = self._queue.insert_next(track)
@@ -528,7 +529,7 @@ class PlayerEngine(QObject):
     @Slot("QVariant")
     def appendToQueue(self, value) -> None:  # noqa: N802
         """把曲目追加到队列末尾。"""
-        track = _coerce_track(value)
+        track = as_track(value)
         if track is None or not track.name:
             return
         index = self._queue.append(track)
@@ -540,7 +541,7 @@ class PlayerEngine(QObject):
     @Slot("QVariant")
     def extendQueue(self, items) -> None:  # noqa: N802
         """批量追加到队列末尾。"""
-        tracks = [_coerce_track(t) for t in (items or [])]
+        tracks = [as_track(t) for t in (items or [])]
         tracks = [t for t in tracks if t is not None and t.name]
         if not tracks:
             return
@@ -570,7 +571,7 @@ class PlayerEngine(QObject):
 
     @Slot("QVariant")
     def removeFromQueue(self, value) -> None:  # noqa: N802
-        track = _coerce_track(value)
+        track = as_track(value)
         if track is None:
             return
         for i, t in enumerate(self._queue.tracks()):
@@ -1251,15 +1252,6 @@ def _lyric_payload(payload: Any) -> tuple:
     values += [""] * (4 - len(values))
     return tuple("" if v is None else v for v in values)
 
-
-def _coerce_track(value: Any) -> Optional[Track]:
-    if value is None:
-        return None
-    if isinstance(value, Track):
-        return value
-    if isinstance(value, dict):
-        return Track.from_dict(value)
-    return None
 
 def _read_local_lrc(audio_path: str) -> Optional[str]:
     """读取同目录同名 ``.lrc`` 字幕文件（FMCL 完全不支持本地歌词）。"""

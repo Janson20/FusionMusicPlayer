@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess
 import sys
 import threading
 import time
@@ -33,7 +32,7 @@ from typing import Any, Optional
 
 from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
 
-from .. import paths
+from .. import paths, shellopen
 from ..core import update_install as install_ops
 from ..core import updater
 from ..core.updater import ReleaseAsset, ReleaseInfo, UpdaterError
@@ -362,7 +361,7 @@ class UpdateController(QObject):
             session = updater.build_session(self._proxy())
             target = updater.download(
                 asset,
-                install_ops.updates_dir(),
+                paths.updates_dir(),
                 session=session,
                 timeout=max(30, self._timeout()),
                 progress=self._note_progress,
@@ -409,7 +408,7 @@ class UpdateController(QObject):
         ok, error = True, ""
         try:
             version = self._release.version if self._release else "unknown"
-            staging = install_ops.updates_dir() / f"{install_ops.STAGING_PREFIX}{version}"
+            staging = paths.updates_dir() / f"{install_ops.STAGING_PREFIX}{version}"
             self._staging_dir = install_ops.stage_release(
                 self._asset_path, self._kind, staging,
                 progress=self._note_progress,
@@ -461,7 +460,7 @@ class UpdateController(QObject):
         install_dir = paths.program_dir()
         try:
             exe_name = Path(sys.executable).name
-            backup_dir = (install_ops.updates_dir()
+            backup_dir = (paths.updates_dir()
                           / f"{install_ops.BACKUP_PREFIX}{self.latestVersion or 'old'}")
             script = install_ops.write_script(install_ops.build_script())
             install_ops.write_pending({
@@ -512,13 +511,8 @@ class UpdateController(QObject):
         """打开更新日志（出问题时让用户直接看这个文件）。"""
         target = install_ops.log_file()
         try:
-            if sys.platform == "win32":
-                os.startfile(str(target))  # type: ignore[attr-defined]
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", str(target)])
-            else:
-                subprocess.Popen(["xdg-open", str(target)])
-        except Exception as e:
+            shellopen.open_path(target)
+        except OSError as e:
             logger.debug("打开更新日志失败: %s", e)
             self.errorOccurred.emit("无法打开更新日志")
 

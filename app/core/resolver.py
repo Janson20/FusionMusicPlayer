@@ -18,15 +18,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
-from . import cache
+from . import cache, naming
 from .models import LOCAL_SOURCE, Track, normalize_singers
 from .. import sources
 
 logger = logging.getLogger(__name__)
 
-# FMCL app_music.py:135-144
-_AUDIO_FILE_MAGIC = ((b"ID3", ".mp3"), (b"fLaC", ".flac"), (b"OggS", ".ogg"), (b"RIFF", ".wav"))
-_M4A_FTYP_MAGIC = b"ftyp"
+#: 时长容差（判据取自 FMCL app_music.py:135-144）
 _DURATION_TOLERANCE_RATIO = 0.2
 _DURATION_TOLERANCE_MIN_SEC = 10
 
@@ -62,26 +60,14 @@ class Resolved:
 # ──────────────────────────────────────────────────────────────
 
 def validate_audio_file_header(filepath: str) -> bool:
-    """校验音频文件头，拦截 HTML 错误页 / 空文件。"""
-    try:
-        if not os.path.exists(filepath):
-            return False
-        if os.path.getsize(filepath) == 0:
-            return False
-        with open(filepath, "rb") as f:
-            head = f.read(16)
-        if not head:
-            return False
-        for magic, _ext in _AUDIO_FILE_MAGIC:
-            if head.startswith(magic):
-                return True
-        if len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xE0) == 0xE0:
-            return True
-        if len(head) >= 8 and head[4:8] == _M4A_FTYP_MAGIC:
-            return True
-        return False
-    except OSError:
-        return False
+    """校验音频文件头，拦截 HTML 错误页 / 空文件。
+
+    判据与「下载落盘时按文件头纠正扩展名」是**同一张表**
+    （:func:`app.core.naming.sniff_file_suffix`）—— 两边各写一份的话，迟早会出现
+    「校验放行了却认不出格式」这种分叉。文件不存在 / 空文件 / 读不出来一律
+    ``False``。
+    """
+    return bool(naming.sniff_file_suffix(filepath))
 
 def validate_audio_duration(filepath: str, expected_seconds: int) -> bool:
     """校验实际时长与期望时长的偏差，拦截 VIP 试听片段。

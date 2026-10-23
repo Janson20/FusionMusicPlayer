@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .. import paths
+from ..units import to_int
 from .models import Track
 from .queue import PLAY_MODE_NAMES, PlayMode, PlayQueue, mode_from_name
 from .store import atomic_write_json, read_json
@@ -61,12 +62,6 @@ class Session:
         }
 
 
-def _to_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
 
 def save(queue: PlayQueue, position_ms: int = 0, *, path: Optional[Path] = None) -> bool:
     """把队列与进度写进会话文件；队列为空时顺手删掉旧文件。
@@ -83,7 +78,7 @@ def save(queue: PlayQueue, position_ms: int = 0, *, path: Optional[Path] = None)
     payload = {
         "version": SCHEMA_VERSION,
         "saved_at": int(time.time()),
-        "position_ms": max(0, _to_int(position_ms)),
+        "position_ms": max(0, to_int(position_ms)),
         "queue": snapshot,
     }
     try:
@@ -102,7 +97,7 @@ def load(*, path: Optional[Path] = None) -> Optional[Session]:
     """
     target = Path(path) if path else paths.session_file()
     raw = read_json(target, None)
-    if not isinstance(raw, dict) or _to_int(raw.get("version")) != SCHEMA_VERSION:
+    if not isinstance(raw, dict) or to_int(raw.get("version")) != SCHEMA_VERSION:
         return None
 
     queue = raw.get("queue")
@@ -118,13 +113,13 @@ def load(*, path: Optional[Path] = None) -> Optional[Session]:
         return None
 
     # 下标夹回范围：手改过的文件里可能是 99，直接拿去索引会 IndexError
-    index = min(max(0, _to_int(queue.get("index"))), len(tracks) - 1)
+    index = min(max(0, to_int(queue.get("index"))), len(tracks) - 1)
     return Session(
         tracks=tracks,
         index=index,
         mode=mode_from_name(str(queue.get("mode") or ""), PlayMode.LOOP_LIST),
-        position_ms=max(0, _to_int(raw.get("position_ms"))),
-        saved_at=max(0, _to_int(raw.get("saved_at"))),
+        position_ms=max(0, to_int(raw.get("position_ms"))),
+        saved_at=max(0, to_int(raw.get("saved_at"))),
     )
 
 

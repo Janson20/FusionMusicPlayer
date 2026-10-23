@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from .. import paths
+from ..units import human_size
 
 logger = logging.getLogger(__name__)
 
@@ -64,10 +65,7 @@ class BackgroundImage:
 
     @property
     def size_text(self) -> str:
-        mb = self.size / 1024 / 1024
-        if mb >= 1:
-            return f"{mb:.1f} MB"
-        return f"{max(1, round(self.size / 1024))} KB"
+        return human_size(self.size)
 
     @property
     def info_text(self) -> str:

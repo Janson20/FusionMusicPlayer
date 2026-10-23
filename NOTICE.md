@@ -33,8 +33,12 @@ Fusion Music Player 采用 **GPL-3.0-only** 许可（见 `LICENSE`）。
 导致启动阻塞。
 
 `app/core/resolver.py` 中的音频文件头校验与时长校验判据
-（`ID3` / `fLaC` / `OggS` / `RIFF` / `MP3` 裸帧 / `ftyp`，以及
-`max(10s, 期望时长 × 0.2)` 的容差）同样取自 FMCL。
+（`ID3` / `fLaC` / `OggS` / `MAC` / `wvpk` / `WMA` / `RIFF+WAVE` / `MP3` 裸帧 /
+`ftyp`，以及 `max(10s, 期望时长 × 0.2)` 的容差）同样取自 FMCL。
+
+> 魔术字节表在 `app/core/naming.py` 里只有一份（`sniff_audio_suffix`）：下载落盘
+> 时靠它纠正扩展名，播放前 `resolver.validate_audio_file_header` 靠它拦截 HTML
+> 错误页，两处必须同一套判据。
 
 `app/core/lyrics.py` 的三个 LRC 正则与时间计算规则（毫秒右侧补零、
 一行多标签展开、全局 `offset` 叠加、负值钳零）取自 FMCL 的 `ui/music_lyrics.py`。

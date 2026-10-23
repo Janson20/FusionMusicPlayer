@@ -12,9 +12,6 @@
 from __future__ import annotations
 
 import logging
-import os
-import subprocess
-import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -22,9 +19,10 @@ from PySide6.QtCore import (
     QAbstractListModel, QByteArray, QModelIndex, Property, QObject, Qt, QTimer, QUrl, Signal, Slot,
 )
 
-from .. import paths
+from .. import paths, shellopen
 from ..core import downloader, naming
 from ..core.downloader import DownloadItem, DownloadManager, DownloadOptions
+from ..core.trackutil import as_dict
 
 logger = logging.getLogger(__name__)
 
@@ -209,16 +207,13 @@ class DownloadController(QObject):
 
     @Property("QVariantList", constant=True)
     def duplicateOptions(self):  # noqa: N802
-        return [
-            {"id": "rename", "name": "自动加序号（1）"},
-            {"id": "skip", "name": "跳过已存在的"},
-            {"id": "overwrite", "name": "覆盖同名文件"},
-        ]
+        """同名文件处理的选项（与设置页同一份文案）。"""
+        return downloader.duplicate_choices()
 
     @Slot("QVariant", result="QVariant")
     def qualityOptions(self, track) -> List[Dict[str, Any]]:  # noqa: N802
         """某首曲目可选的音质（含「该音源有没有这一档」与预计体积）。"""
-        data = _as_dict(track)
+        data = as_dict(track)
         return _quality_options(data or None)
 
     @Slot(str, result=str)
@@ -257,7 +252,7 @@ class DownloadController(QObject):
         """
         prepared = _downloadable(tracks)
         out: List[Dict[str, Any]] = []
-        for quality in ["auto", *downloader.QUALITY_ORDER]:
+        for quality in [downloader.AUTO_QUALITY, *downloader.QUALITY_ORDER]:
             total = 0
             for track in prepared:
                 for candidate in downloader.quality_ladder(quality):
@@ -265,7 +260,11 @@ class DownloadController(QObject):
                     if size:
                         total += size
                         break
-            name = "自动（按可用最高音质）" if quality == "auto" else downloader.quality_label(quality)
+            name = (
+                downloader.AUTO_QUALITY_LABEL
+                if quality == downloader.AUTO_QUALITY
+                else downloader.quality_label(quality)
+            )
             out.append({
                 "id": quality,
                 "name": name,
@@ -278,16 +277,14 @@ class DownloadController(QObject):
     @Slot(str, result=str)
     def normalizeDir(self, url: str) -> str:  # noqa: N802
         """``file://`` URL（或手输路径）→ 本地路径。"""
-        from .library import normalize_folder
-
-        return normalize_folder(url)
+        return paths.normalize_folder(url)
 
     # ── 另存为（单曲）──────────────────────────────────────
 
     @Slot("QVariant", str, result="QVariant")
     def saveAsHint(self, track, quality: str) -> Dict[str, str]:  # noqa: N802
         """另存为对话框的默认值：``{name, suffix, file, folder}``（后两个是 file:// URL）。"""
-        data = _as_dict(track)
+        data = as_dict(track)
         options = self._manager.options()
         stem = naming.suggested_stem(data, options.template)
         suffix = naming.quality_suffix(str(quality or options.quality))
@@ -303,11 +300,11 @@ class DownloadController(QObject):
     @Slot("QVariant", str, str, result=bool)
     def saveAs(self, track, quality: str, url: str) -> bool:  # noqa: N802
         """单曲另存为：``url`` 是 QML ``FileDialog`` 给的 ``file://`` URL。"""
-        data = _as_dict(track)
+        data = as_dict(track)
         if not data:
             self.errorOccurred.emit("没有要下载的歌曲")
             return False
-        target = _local_path(url)
+        target = paths.from_file_url(url)
         if not target:
             self.errorOccurred.emit("没有选择保存位置")
             return False
@@ -356,16 +353,7 @@ class DownloadController(QObject):
 
     def _options_from(self, values: Any) -> DownloadOptions:
         """对话框的取值（QVariantMap）→ 下载选项，缺项一律用设置里的默认值。"""
-        data = values
-        if data is not None and not isinstance(data, dict):
-            to_variant = getattr(data, "toVariant", None)
-            if callable(to_variant):
-                try:
-                    data = to_variant()
-                except Exception:  # pragma: no cover - QJSValue 已失效
-                    data = None
-        if not isinstance(data, dict):
-            data = {}
+        data = as_dict(values)
         options = self._manager.options(
             quality=str(data.get("quality") or "") or None,
             directory=str(data.get("directory") or "") or None,
@@ -456,13 +444,8 @@ class DownloadController(QObject):
     def openPath(self, path: str) -> None:  # noqa: N802
         target = str(path or "").strip() or downloader.default_directory(self._config)
         try:
-            if sys.platform == "win32":
-                os.startfile(target)  # type: ignore[attr-defined]
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", target])
-            else:
-                subprocess.Popen(["xdg-open", target])
-        except Exception as e:
+            shellopen.open_path(target)
+        except OSError as e:
             logger.warning("打开路径失败 %s: %s", target, e)
             self.errorOccurred.emit(f"无法打开路径：{target}")
 
@@ -497,11 +480,8 @@ class DownloadController(QObject):
             return
         path = str(item.target)
         try:
-            if sys.platform == "win32":
-                subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
-            else:
-                self.openPath(str(Path(path).parent))
-        except Exception as e:
+            shellopen.reveal_in_folder(path)
+        except OSError as e:
             logger.warning("定位文件失败 %s: %s", path, e)
             self.errorOccurred.emit("无法在文件夹中定位这个文件")
 
@@ -572,12 +552,9 @@ def _as_list(value: Any) -> List[Any]:
 
 def _quality_options(track: Any) -> List[Dict[str, Any]]:
     """音质选项：先「自动」，再四档具体音质（带可用性与预计体积）。"""
-    options: List[Dict[str, Any]] = [
-        {"id": "auto", "name": "自动（按可用最高音质）",
-         "available": True, "size": 0, "sizeText": ""}
-    ]
-    options.extend(downloader.quality_options(track))
-    return options
+    auto: Dict[str, Any] = dict(downloader.quality_choices()[0])
+    auto.update({"available": True, "size": 0, "sizeText": ""})
+    return [auto, *downloader.quality_options(track)]
 
 
 def _downloadable(tracks: Any) -> List[Dict[str, Any]]:
@@ -585,7 +562,7 @@ def _downloadable(tracks: Any) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     seen = set()
     for value in _as_list(tracks):
-        data = _as_dict(value)
+        data = as_dict(value)
         if not data:
             continue
         source = str(data.get("source") or "")
@@ -600,18 +577,7 @@ def _downloadable(tracks: Any) -> List[Dict[str, Any]]:
     return out
 
 
-def _as_dict(value: Any) -> Dict[str, Any]:
-    """QML 传来的曲目（字典 / JSON 串 / ``Track`` / QJSValue）→ 字典。"""
-    from ..core import covers
 
-    if value is not None and not isinstance(value, (dict, str)):
-        to_variant = getattr(value, "toVariant", None)
-        if callable(to_variant):
-            try:
-                value = to_variant()
-            except Exception:  # pragma: no cover - QJSValue 已失效
-                return {}
-    return covers.as_dict(value)
 
 
 def _as_bool(value: Any, default: Optional[bool]) -> Optional[bool]:
@@ -621,14 +587,3 @@ def _as_bool(value: Any, default: Optional[bool]) -> Optional[bool]:
     if isinstance(value, str):
         return value.strip().lower() in ("1", "true", "yes", "on")
     return bool(value)
-
-
-def _local_path(url: str) -> str:
-    """``file://`` URL → 本地路径（普通路径原样返回）。"""
-    text = str(url or "").strip()
-    if not text:
-        return ""
-    if not text.startswith("file:"):
-        return text
-    local = QUrl(text).toLocalFile()
-    return local or text

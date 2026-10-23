@@ -47,7 +47,6 @@ import secrets
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 from ctypes import wintypes
 from pathlib import Path
@@ -58,6 +57,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
 
 from .. import paths
+from ..jsonio import atomic_write_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -196,19 +196,12 @@ def _restrict_permissions(path: Path) -> None:
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
-    """原子写入：临时文件 + os.replace。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    """原子写入密钥 / 盐，写完顺手收紧权限。
+
+    原子部分与别处同一份（:func:`app.jsonio.atomic_write_bytes`），这里多一步
+    Windows ACL 收紧：凭据解不开的密钥文件落在盘上，只有当前用户该读得到。
+    """
+    atomic_write_bytes(path, data)
     _restrict_permissions(path)
 
 

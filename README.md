@@ -863,8 +863,11 @@ FusionMusicPlayer/
 │   ├── splash_win32.py          启动画面用到的 Win32 常量 / 结构体 / 函数原型
 │   ├── startup.py               启动阶段计时（FMP_TRACE_STARTUP=1）
 │   ├── lazy.py                  延迟导入代理（requests 不在启动链上）
-│   ├── paths.py                 程序 / 数据目录解析
+│   ├── paths.py                 程序 / 数据目录解析、file:// URL 与文件夹路径归一
 │   ├── config.py                设置持久化（浅合并 + 点号路径）
+│   ├── jsonio.py                JSON / 字节的原子落盘与损坏备份
+│   ├── units.py                 体积换算与「字符串转整数」的唯一实现
+│   ├── shellopen.py             用系统默认程序打开文件 / 在资源管理器中定位
 │   ├── security/vault.py        凭据加密仓库
 │   ├── sources/                 音源层
 │   │   ├── __init__.py          惰性注册表 + 跨源兜底 + 网易云账号门面
@@ -872,6 +875,7 @@ FusionMusicPlayer/
 │   │   └── netease.py           网易云补充接口（发现页 / 歌词〔逐行+翻译+逐字〕/ 歌曲百科）
 │   ├── core/
 │   │   ├── models.py            Track 模型 + QML 列表模型
+│   │   ├── trackutil.py         曲目形态归一（Track / MusicInfo / 字典 / QJSValue）
 │   │   ├── backgrounds.py       自定义背景图的入库 / 替换 / 清理
 │   │   ├── covers.py            封面保存：取封面 / 去缩略参数 / 纠正扩展名 / 文件名清洗
 │   │   ├── queue.py             单一队列与播放模式

@@ -61,16 +61,17 @@ QR_SUCCESS = 803
 PROVIDER = "netease"
 MUSIC_U_TTL_SECONDS = netease.COOKIE_TTL_SECONDS  # 拿不到 Set-Cookie 时的兜底估算
 
-# 网易云会员标识（vipCode / vipType 位掩码都归一到这几个名字）
+# 网易云会员标识（vipCode / vipType 位掩码都归一到这几个名字）。
+# 名字本身由音源层给出（app/sources/netease.py 的 VIP_NAME_*），两处共用一份文案。
 VIP_LABELS = {
     0: "普通用户",
-    1: "音乐包",
-    10: "黑胶VIP",
-    11: "黑胶VIP",
-    20: "黑胶SVIP",
-    100: "黑胶VIP",
-    220: "音乐包",
-    300: "黑胶SVIP",
+    1: netease.VIP_NAME_PACKAGE,
+    10: netease.VIP_NAME_BLACK,
+    11: netease.VIP_NAME_BLACK,
+    20: netease.VIP_NAME_SVIP,
+    100: netease.VIP_NAME_BLACK,
+    220: netease.VIP_NAME_PACKAGE,
+    300: netease.VIP_NAME_SVIP,
 }
 
 #: 会员等级用的中文数字。用的是「壹贰叁肆」这套大写写法 ——
