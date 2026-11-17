@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!--
+      第三方音乐 CDN 仍有 http 地址（网易云 / QQ / 酷我 / 酷狗等）。
+      客户端自己的 API 与登录请求在代码层强制 HTTPS；这里只放行媒体兼容性。
+    -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

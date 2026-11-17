@@ -47,6 +47,32 @@ Fusion Music Player 采用 **GPL-3.0-only** 许可（见 `LICENSE`）。
 账号管理、缓存、桥接层、设置系统）均为本项目重新实现，未复制 FMCL 的
 `customtkinter` UI 或 `pygame` 播放后端。
 
+## Android 客户端（`mobile/`）
+
+`mobile/` 的 Kotlin 音源协议移植自本仓库的 `app/sources/`（后者本身取自 FMCL，
+GPL-3.0-only）。对应关系：
+
+| Android 文件 | 上游实现 |
+|---|---|
+| `mobile/.../data/source/NeteaseSource.kt` | `app/sources/wy.py` + `app/sources/netease.py` |
+| `mobile/.../data/source/QQMusicSource.kt` | `app/sources/tx.py` |
+| `mobile/.../data/source/KuwoMusicSource.kt` | `app/sources/kw.py` |
+| `mobile/.../data/source/KugouMusicSource.kt` | `app/sources/kg.py` |
+| `mobile/.../data/source/MiguMusicSource.kt` | `app/sources/mg.py` |
+| `mobile/.../data/source/BilibiliMusicSource.kt` | `app/sources/bili.py` |
+| `mobile/.../data/net/Crypto.kt` | `app/sources/utils.py` |
+| `mobile/.../data/lyrics/Lyrics.kt` | `app/core/lyrics.py` |
+| `mobile/.../core/loudness/Loudness.kt` + `LoudnessStore.kt` | `app/core/loudness.py` + `loudness_store.py` |
+| `mobile/.../playback/LoudnessService.kt` + `LoudnessAnalyzer.kt` | `app/core/loudness_service.py` + `loudness_decode.py` |
+| `mobile/.../data/update/Updater.kt` + `UpdateRepository.kt` | `app/core/updater.py` + `app/bridges/update.py` |
+| `mobile/.../data/source/NeteaseCatalog.kt` | `app/sources/netease.py` + `app/bridges/{artist,album,wiki}.py` |
+
+协议常量与解析逻辑按行为对齐移植；没有加入任何来源不明的二进制或破解密钥。
+Android 端第三方依赖与 jaudiotagger 的 LGPL 许可见
+[`mobile/THIRD_PARTY_NOTICES.md`](mobile/THIRD_PARTY_NOTICES.md)。
+
+---
+
 ## 为什么上游是 GPL 而本项目也是 GPL
 
 GPL-3.0 具有传染性：分发包含 GPL 代码的衍生作品时，整体必须以 GPL-3.0 授权

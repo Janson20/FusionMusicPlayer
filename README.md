@@ -1042,6 +1042,40 @@ FMCL 的音乐模块是 `customtkinter` + `pygame.mixer`，UI 约 4300 行不可
 
 ---
 
+## Android 客户端（`mobile/`）
+
+仓库内新增**原生 Android 客户端**，Kotlin + Jetpack Compose + Media3，代码全部在
+[`mobile/`](mobile/README.md)，桌面端 `app/` 保持原样。
+
+当前已实现：六音源搜索（含搜索建议/历史与音源优先级）、Media3 流式播放与播放队列、
+媒体通知、三态播放页（封面 / 歌词 / 百科，点歌曲自动进入）、歌词（LRC / 翻译 / 罗马音 / yrc 逐字 / 本地 .lrc 边车）、我喜欢的音乐 /
+历史 / 歌单、发现 / 漫游 / 歌单详情、歌手页 / 专辑页 / 歌曲百科、原唱标记、网易云
+扫码 / 短信 / Cookie 登录与加密凭据、SAF 本地音乐扫描与在线匹配、下载（音质降级、
+文件头/时长校验、标签/封面/歌词、MediaStore/SAF 落盘、批量下载）、音量均衡
+（EBU R128 / BS.1770-4）、自定义背景图与完整设置、GitHub Releases 自动更新
+（SHA-256 校验 + PackageInstaller）。
+
+仍待完整设备回归（详见 [`mobile/README.md`](mobile/README.md)）：登录、下载、SAF 与
+音量均衡；当前已完成编译/打包，并在真机上冒烟过冷启动、播放、上一首/下一首和媒体通知。
+
+构建使用 **GitHub Actions 手动触发**：`.github/workflows/android.yml` 只有
+`workflow_dispatch`，可选 debug/release、版本号、以及是否上传到 Release。release
+签名 secrets 为 `ANDROID_KEYSTORE_BASE64` / `ANDROID_KEYSTORE_PASSWORD` /
+`ANDROID_KEY_ALIAS` / `ANDROID_KEY_PASSWORD`；未配置时 release 构建会明确失败，
+不会产出不可安装的包。本地构建：
+
+```bash
+cd mobile
+./gradlew :app:assembleDebug
+```
+
+Android 端沿用桌面端 `data/` 下的 JSON schema（config / playlists / favorites /
+history / local / session / loudness），数据落在应用私有目录；下载默认进系统媒体库
+`Music/FusionMusicPlayer`，也可选 SAF 目录。Android 10+ 不需要存储权限；Android 9
+及以下仅申请 `WRITE_EXTERNAL_STORAGE`（maxSdk 28）以写公共音乐目录，拒绝时退回
+应用专属外部目录。不申请全盘存储权限。
+
+---
 ## 许可
 
 GPL-3.0-only。音源实现来自 FMCL，详见 [`NOTICE.md`](NOTICE.md)。

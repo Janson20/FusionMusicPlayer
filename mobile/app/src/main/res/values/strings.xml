@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Fusion Music</string>
+    <string name="nav_discover">发现</string>
+    <string name="nav_roam">漫游</string>
+    <string name="nav_search">搜索</string>
+    <string name="nav_library">我的</string>
+    <string name="nav_downloads">下载</string>
+    <string name="nav_local">本地音乐</string>
+    <string name="nav_queue">播放队列</string>
+    <string name="settings">设置</string>
+    <string name="notification_channel_playback">播放控制</string>
+</resources>

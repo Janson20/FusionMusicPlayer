@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <files-path name="updates" path="data/updates/" />
+    <files-path name="logs" path="data/logs/" />
+    <cache-path name="cache" path="." />
+    <external-path name="public_music" path="Music/FusionMusicPlayer/" />
+    <external-files-path name="app_music" path="Music/FusionMusicPlayer/" />
+    <files-path name="internal_music" path="music/" />
+</paths>

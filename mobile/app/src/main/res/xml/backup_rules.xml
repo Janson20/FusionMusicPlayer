@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <exclude domain="file" path="data/credentials.enc" />
+    <exclude domain="file" path="data/keys" />
+    <exclude domain="file" path="data/cache" />
+    <exclude domain="file" path="data/logs" />
+    <exclude domain="file" path="data/updates" />
+</full-backup-content>

@@ -32,6 +32,16 @@ env/
 Thumbs.db
 desktop.ini
 
+# ── Android（mobile/）────────────────────────────────────────
+mobile/.gradle/
+mobile/**/build/
+mobile/.kotlin/
+mobile/local.properties
+mobile/app/release/
+*.jks
+*.keystore
+keystore.properties
+
 # ── 本地临时 ─────────────────────────────────────────────────
 /_scratch/
 *.log
