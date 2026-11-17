@@ -22,7 +22,7 @@ import threading
 import time
 from typing import Any, Dict, Optional
 
-from PySide6.QtCore import QObject, Property, Signal, Slot
+from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
 
 from .. import paths
 from ..paths import APP_VERSION
@@ -45,6 +45,8 @@ from ..sources import (
     wy_source,
 )
 from ..sources import netease
+from .login_qr import TransferQrProvider, discover_lan_ipv4, render_qr_png
+from .login_transfer import LoginTransferSession, TransferError
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +111,9 @@ class _Emitter(QObject):
     playlistsDone = Signal(object)
     checkDone = Signal(object)
     renewDone = Signal(str)
+    transferEvent = Signal(str, str, int)
+    transferPrepared = Signal(object)
+    transferPrepareFailed = Signal(object)
 
 class AccountManager(QObject):
     """网易云账号状态、登录流程与凭据续期。"""
@@ -120,6 +125,7 @@ class AccountManager(QObject):
     playlistsChanged = Signal()
     busyChanged = Signal()
     credentialsChanged = Signal()
+    transferChanged = Signal()
     message = Signal(str)
     errorOccurred = Signal(str)
 
@@ -134,6 +140,9 @@ class AccountManager(QObject):
         self._emitter.playlistsDone.connect(self._on_playlists_done)
         self._emitter.checkDone.connect(self._on_check_done)
         self._emitter.renewDone.connect(self._on_renew_done)
+        self._emitter.transferEvent.connect(self._on_transfer_event)
+        self._emitter.transferPrepared.connect(self._on_transfer_prepared)
+        self._emitter.transferPrepareFailed.connect(self._on_transfer_prepare_failed)
 
         self._logged_in = False
         self._busy = False
@@ -142,6 +151,22 @@ class AccountManager(QObject):
         self._qr_key = ""
         self._qr_seq = 0
         self._qr_running = False
+
+        self._transfer: LoginTransferSession | None = None
+        self._transfer_qr_provider: TransferQrProvider | None = None
+        self._transfer_qr_image = ""
+        self._transfer_status = "未开始"
+        self._transfer_active = False
+        self._transfer_expires_at = 0
+        self._transfer_seconds = 0
+        self._transfer_hosts: list[str] = []
+        self._transfer_host_index = 0
+        self._transfer_address = ""
+        self._transfer_timer = QTimer(self)
+        self._transfer_timer.setInterval(1000)
+        self._transfer_timer.timeout.connect(self._tick_transfer)
+        self._transfer_seq = 0
+        self._transfer_cancel: threading.Event | None = None
 
         self._nickname = ""
         self._avatar = ""
@@ -174,6 +199,36 @@ class AccountManager(QObject):
     @Property(str, notify=qrChanged)
     def qrImage(self) -> str:  # noqa: N802
         return self._qr_image
+
+    # ── 手机扫码登录（桌面 → 手机一次性传输）──────────────
+
+    @Property(bool, notify=transferChanged)
+    def transferActive(self) -> bool:  # noqa: N802
+        return self._transfer_active
+
+    @Property(str, notify=transferChanged)
+    def transferQrImage(self) -> str:  # noqa: N802
+        return self._transfer_qr_image
+
+    @Property(str, notify=transferChanged)
+    def transferStatus(self) -> str:  # noqa: N802
+        return self._transfer_status
+
+    @Property(int, notify=transferChanged)
+    def transferSeconds(self) -> int:  # noqa: N802
+        return self._transfer_seconds
+
+    @Property(str, notify=transferChanged)
+    def transferAddress(self) -> str:  # noqa: N802
+        return self._transfer_address
+
+    @Property("QVariantList", notify=transferChanged)
+    def transferAddresses(self):  # noqa: N802
+        return list(self._transfer_hosts)
+
+    @Slot(object)
+    def setTransferImageProvider(self, provider) -> None:  # noqa: N802
+        self._transfer_qr_provider = provider if isinstance(provider, TransferQrProvider) else None
 
     @Property(str, notify=profileChanged)
     def nickname(self) -> str:
@@ -589,6 +644,261 @@ class AccountManager(QObject):
             self._set_busy(False)
             self._set_status("二维码已超时，请重新获取")
 
+    # ── 手机扫码登录（桌面 → 手机一次性传输）──────────────
+
+    @Slot()
+    def startTransferLogin(self) -> None:  # noqa: N802
+        """生成一张手机扫码登录二维码，并启动一次性局域网取件服务。
+
+        网卡枚举、临时服务和二维码渲染都放到工作线程：Windows 上解析主机名
+        / 选出站网卡偶尔会卡几秒，放在主线程会让整个窗口显示「未响应」。
+        """
+        self._begin_transfer(None, 0)
+
+    @Slot()
+    def cycleTransferAddress(self) -> None:  # noqa: N802
+        """多网卡时换一个地址重新生成二维码。"""
+        if len(self._transfer_hosts) <= 1:
+            return
+        index = (self._transfer_host_index + 1) % len(self._transfer_hosts)
+        self._begin_transfer(list(self._transfer_hosts), index)
+
+    def _begin_transfer(self, hosts: list[str] | None, index: int) -> None:
+        if not self._logged_in:
+            self.errorOccurred.emit("请先登录网易云账号")
+            return
+        if self._transfer_qr_provider is None:
+            self.errorOccurred.emit("手机扫码登录界面尚未就绪，请重启程序后再试")
+            return
+        cookies = wy_get_cookie_str()
+        if not cookies or not wy_is_logged_in():
+            self.errorOccurred.emit("当前会话没有可传输的登录凭据，请重新登录")
+            return
+        if self._expires_at and self._expires_at <= int(time.time()):
+            self.errorOccurred.emit("登录凭据已过期，请先重新登录")
+            return
+
+        now = int(time.time())
+        payload = {
+            "provider": PROVIDER,
+            "cookies": cookies,
+            "user_id": int(self._user_id or 0),
+            "nickname": self._nickname or "",
+            "avatar_url": self._avatar or "",
+            "vip_type": int(self._vip_type or 0),
+            "has_music_package": bool(self._has_music_package),
+            "has_black_vip": bool(self._has_black_vip),
+            "is_svip": bool(self._is_svip),
+            "red_vip_level": int(self._red_vip_level or 0),
+            "red_vip_annual_count": int(self._red_vip_annual_count or 0),
+            "obtained_at": int(self._obtained_at or now),
+            "expires_at": int(self._expires_at or (now + MUSIC_U_TTL_SECONDS)),
+            "app_version": APP_VERSION,
+        }
+
+        self._teardown_transfer(None)
+        self._transfer_hosts = list(hosts) if hosts else []
+        self._transfer_host_index = index if self._transfer_hosts else 0
+        self._transfer_active = True
+        self._transfer_status = "正在准备二维码…"
+        self._transfer_qr_image = ""
+        self._transfer_seconds = 0
+        self._transfer_address = ""
+        self._transfer_expires_at = 0
+        self._transfer_cancel = threading.Event()
+        seq = self._transfer_seq
+        cancel = self._transfer_cancel
+        self.transferChanged.emit()
+        threading.Thread(
+            target=self._transfer_worker,
+            args=(seq, hosts, index, payload, cancel),
+            daemon=True,
+            name="wy-transfer-prepare",
+        ).start()
+
+    def _transfer_worker(
+        self,
+        seq: int,
+        hosts: list[str] | None,
+        index: int,
+        payload: dict,
+        cancel: threading.Event,
+    ) -> None:
+        session: LoginTransferSession | None = None
+        try:
+            if cancel.is_set():
+                return
+            if not hosts:
+                hosts = discover_lan_ipv4()
+                index = 0
+                if cancel.is_set():
+                    return
+            if not hosts:
+                raise TransferError(
+                    "没有找到局域网 IPv4 地址。请确认电脑已连接 Wi-Fi 或网线，并与手机在同一网络。"
+                )
+            index = int(index) % len(hosts)
+            if cancel.is_set():
+                return
+            session = LoginTransferSession(
+                payload,
+                hosts[index],
+                on_event=lambda event, detail, transfer_seq=seq: self._emitter.transferEvent.emit(
+                    event, detail, transfer_seq
+                ),
+            )
+            ticket = session.start()
+            if cancel.is_set():
+                session.stop("cancelled")
+                return
+            png = render_qr_png(ticket.uri)
+            if cancel.is_set():
+                session.stop("cancelled")
+                return
+        except Exception as e:
+            if session is not None:
+                session.stop("cancelled")
+            if cancel.is_set():
+                return
+            if isinstance(e, TransferError):
+                message = str(e)
+            else:
+                logger.warning("创建手机扫码传输失败: %s", e)
+                message = "生成手机扫码登录码失败，请重试"
+            self._emitter.transferPrepareFailed.emit((seq, message))
+            return
+        self._emitter.transferPrepared.emit((seq, session, ticket, list(hosts), index, png))
+
+    @Slot(object)
+    def _on_transfer_prepared(self, payload) -> None:
+        seq, session, ticket, hosts, index, png = payload
+        if seq != self._transfer_seq or not self._transfer_active:
+            session.stop("cancelled")
+            return
+        self._transfer_cancel = None
+        if self._transfer_qr_provider is None:
+            session.stop("cancelled")
+            self._teardown_transfer("生成失败")
+            self.errorOccurred.emit("手机扫码登录界面尚未就绪，请重启程序后再试")
+            return
+        try:
+            source = self._transfer_qr_provider.set_png(png)
+        except Exception as e:
+            session.stop("cancelled")
+            self._teardown_transfer("生成失败")
+            self.errorOccurred.emit(str(e) if isinstance(e, TransferError) else "二维码生成失败")
+            return
+
+        self._transfer = session
+        self._transfer_hosts = list(hosts)
+        self._transfer_host_index = index
+        self._transfer_address = f"{ticket.host}:{ticket.port}"
+        logger.info("手机扫码登录使用局域网地址 %s:%s", ticket.host, ticket.port)
+        self._transfer_qr_image = source
+        self._transfer_status = "等待手机扫码"
+        self._transfer_active = True
+        self._transfer_expires_at = ticket.expires_at
+        self._transfer_seconds = max(0, ticket.expires_at - int(time.time()))
+        self._transfer_timer.start()
+        self.transferChanged.emit()
+
+    @Slot(object)
+    def _on_transfer_prepare_failed(self, payload) -> None:
+        seq, message = payload
+        if seq != self._transfer_seq:
+            return
+        self._transfer_cancel = None
+        self._teardown_transfer("生成失败")
+        self.errorOccurred.emit(str(message or "生成手机扫码登录码失败，请重试"))
+
+    @Slot()
+    def cancelTransferLogin(self) -> None:  # noqa: N802
+        if self._transfer is None and not self._transfer_active:
+            return
+        self._teardown_transfer("已取消")
+
+    @Slot()
+    def shutdownTransfer(self) -> None:  # noqa: N802
+        """程序退出时调用，确保临时监听端口已经关闭。"""
+        self._teardown_transfer(None)
+
+    def _teardown_transfer(self, status: str | None) -> None:
+        self._transfer_seq += 1
+        if self._transfer_cancel is not None:
+            self._transfer_cancel.set()
+            self._transfer_cancel = None
+        session = self._transfer
+        self._transfer = None
+        if session is not None:
+            session.stop("cancelled")
+        self._transfer_timer.stop()
+        self._transfer_active = False
+        self._transfer_qr_image = ""
+        self._transfer_seconds = 0
+        self._transfer_address = ""
+        if self._transfer_qr_provider is not None:
+            self._transfer_qr_provider.clear()
+        if status is not None:
+            self._transfer_status = status
+        self.transferChanged.emit()
+
+    @Slot(str, str, int)
+    def _on_transfer_event(self, event: str, detail: str, seq: int) -> None:
+        # 旧 worker 的 session.stop() 也会发事件；只认当前这一轮传输
+        if seq != self._transfer_seq or self._transfer is None:
+            return
+        if event == "sent":
+            self._transfer = None
+            self._transfer_timer.stop()
+            self._transfer_active = False
+            self._transfer_qr_image = ""
+            self._transfer_seconds = 0
+            self._transfer_address = ""
+            if self._transfer_qr_provider is not None:
+                self._transfer_qr_provider.clear()
+            self._transfer_status = "凭据已发送，请在手机上确认"
+            self.transferChanged.emit()
+            self.message.emit("登录凭据已发送到手机，二维码已失效")
+            return
+
+        self._transfer = None
+        self._transfer_timer.stop()
+        self._transfer_active = False
+        self._transfer_qr_image = ""
+        self._transfer_seconds = 0
+        self._transfer_address = ""
+        if self._transfer_qr_provider is not None:
+            self._transfer_qr_provider.clear()
+        self._transfer_status = detail or "手机扫码登录已结束"
+        self.transferChanged.emit()
+        if event == "failed":
+            self.errorOccurred.emit(detail or "手机扫码登录失败")
+
+    @Slot()
+    def _tick_transfer(self) -> None:
+        if self._transfer is None:
+            self._transfer_timer.stop()
+            return
+        left = max(0, int(self._transfer_expires_at) - int(time.time()))
+        if left <= 0:
+            session = self._transfer
+            self._transfer = None
+            if session is not None:
+                session.stop("expired")
+            self._transfer_timer.stop()
+            self._transfer_active = False
+            self._transfer_qr_image = ""
+            self._transfer_seconds = 0
+            self._transfer_address = ""
+            if self._transfer_qr_provider is not None:
+                self._transfer_qr_provider.clear()
+            self._transfer_status = "二维码已过期，请重新生成"
+            self.transferChanged.emit()
+            return
+        if left != self._transfer_seconds:
+            self._transfer_seconds = left
+            self.transferChanged.emit()
+
     # ── 手机号 / 验证码 / Cookie ────────────────────────────
 
     @Slot(str, str, result=bool)
@@ -696,6 +1006,8 @@ class AccountManager(QObject):
     # ── 登录成功后的统一处理 ────────────────────────────────
 
     def _apply_login_cookie(self, cookie: str) -> None:
+        # 换账号/重新登录时，旧二维码里还是旧凭据，必须先作废
+        self._teardown_transfer(None)
         cookie = (cookie or "").replace(" HTTPOnly", "")
         if cookie:
             wy_apply_cookie(cookie)
@@ -830,6 +1142,8 @@ class AccountManager(QObject):
             return
 
         if renewed:
+            # 二维码里是旧 MUSIC_U，续期后不能再让它取到旧凭据
+            self._teardown_transfer(None)
             self._persist_credentials(renewed, {})
             self.message.emit("登录凭据已自动续期")
             self.credentialsChanged.emit()
@@ -865,6 +1179,7 @@ class AccountManager(QObject):
         if not cookies:
             self.errorOccurred.emit("续期失败，请检查网络后重试（或重新登录）")
             return
+        self._teardown_transfer(None)
         self._persist_credentials(cookies, {})
         self.message.emit("登录凭据已续期")
         self.credentialsChanged.emit()
@@ -960,6 +1275,7 @@ class AccountManager(QObject):
 
     def _reset_login_state(self) -> None:
         """清掉内存里的登录态（不含凭据文件）。"""
+        self._teardown_transfer(None)
         self._logged_in = False
         self._nickname = ""
         self._avatar = ""

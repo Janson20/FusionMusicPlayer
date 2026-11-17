@@ -27,6 +27,7 @@ from .bridges.update import UpdateController
 from .bridges.wiki import SongWikiController
 from .config import Config
 from .core.account import AccountManager
+from .core.login_qr import TransferQrProvider
 from .core.loudness_service import LoudnessService
 from .core.player import PlayerEngine
 from .core.store import Library
@@ -138,6 +139,10 @@ class Application(QObject):
 
         # ── QML ─────────────────────────────────────────────
         self.engine = QQmlApplicationEngine()
+        # 二维码只在内存里，避免带临时密钥的 PNG 落到 cache 目录
+        self.transfer_qr_provider = TransferQrProvider()
+        self.engine.addImageProvider("login-transfer", self.transfer_qr_provider)
+        self.account.setTransferImageProvider(self.transfer_qr_provider)
         FluentUI.init(self.engine)
         # 让 ui/ 目录下的 qmldir（Theme 单例）可被解析
         self.engine.addImportPath(str(paths.qml_dir()))
@@ -361,6 +366,11 @@ class Application(QObject):
 
     def shutdown(self) -> None:
         logger.info("正在退出，保存数据…")
+        try:
+            # 先撤掉手机扫码的临时监听端口
+            self.account.shutdownTransfer()
+        except Exception as e:
+            logger.debug("停止手机扫码登录服务失败: %s", e)
         try:
             # 先停下载：正在写的任务要取消掉并删掉 .part，否则会留下半截文件
             self.download.shutdown()

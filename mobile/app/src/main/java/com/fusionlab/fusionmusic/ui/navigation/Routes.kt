@@ -27,6 +27,7 @@ object Routes {
     const val QUEUE = "queue"
     const val SETTINGS = "settings"
     const val LOGIN = "login"
+    const val DESKTOP_SCAN = "desktop_scan"
     const val LOCAL = "local"
     const val PLAYLIST_DETAIL = "playlist/{playlistId}"
     const val ARTIST_DETAIL = "artist/{artistId}?name={name}"

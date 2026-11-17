@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.boolean
@@ -234,6 +235,146 @@ class AccountRepository(
         }
         onLoggedIn(netease.cookieString())
         true
+    }
+
+    suspend fun prepareDesktopLogin(uri: String): DesktopLoginCandidate? = withContext(Dispatchers.IO) {
+        update { it.copy(busy = true, status = "正在读取桌面登录信息…", error = null) }
+        try {
+            val candidate = DesktopLoginTransfer.redeem(uri, log)
+            update { it.copy(busy = false, status = "扫描成功", error = null) }
+            candidate
+        } catch (error: DesktopTransferException) {
+            failDesktop(error.message ?: "无法读取桌面登录信息")
+            null
+        } catch (error: Exception) {
+            log.w("Account", "desktop transfer failed: " + error.javaClass.simpleName)
+            failDesktop("读取桌面登录信息失败")
+            null
+        }
+    }
+
+    suspend fun applyDesktopLogin(candidate: DesktopLoginCandidate): Boolean = withContext(Dispatchers.IO) {
+        val netease = source
+        if (netease == null) {
+            failDesktop("音源不可用，请稍后重试")
+            return@withContext false
+        }
+        update { it.copy(busy = true, status = "正在验证桌面登录…", error = null) }
+        val previousCookie = netease.cookieString()
+        val previousLoggedIn = currentLoggedIn()
+        try {
+            netease.applyCookie(candidate.cookies)
+            if (!netease.isLoggedIn()) {
+                throw DesktopTransferException("二维码里的 MUSIC_U 无效，请在电脑上重新登录")
+            }
+            val profile = netease.fetchProfile()
+                ?: throw DesktopTransferException("无法验证桌面登录，请检查网络后重试")
+            if (candidate.userId > 0 && profile.userId > 0 && candidate.userId != profile.userId) {
+                throw DesktopTransferException("登录账号与电脑端不一致，请重新扫码")
+            }
+            val now = System.currentTimeMillis() / 1000L
+            val expiry = if (candidate.expiresAt > now) {
+                candidate.expiresAt
+            } else {
+                netease.cookieExpiry() ?: (now + TTL_SECONDS)
+            }
+            val cookies = netease.cookieString().ifBlank { candidate.cookies }
+            val saveWarning = saveImportedCredentials(profile, cookies, expiry, candidate)
+            val merged = importedPayload(candidate, profile, cookies, expiry)
+            update {
+                it.copy(
+                    loggedIn = true,
+                    busy = false,
+                    status = "已登录",
+                    nickname = profile.nickname.ifBlank { candidate.nickname },
+                    avatarUrl = profile.avatarUrl,
+                    userId = profile.userId,
+                    vipLabel = vipLabel(profile, merged),
+                    vipDetail = vipDetail(profile, merged),
+                    daysLeft = daysLeft(expiry),
+                    portable = vault.portable(),
+                    keySource = vault.keySource(),
+                    error = saveWarning
+                )
+            }
+            refreshPlaylists()
+            true
+        } catch (error: DesktopTransferException) {
+            restoreDesktopSession(netease, previousCookie, previousLoggedIn)
+            failDesktop(error.message ?: "导入桌面登录失败")
+            false
+        } catch (error: Exception) {
+            log.w("Account", "apply desktop login failed: " + error.javaClass.simpleName)
+            restoreDesktopSession(netease, previousCookie, previousLoggedIn)
+            failDesktop("导入桌面登录失败，请重试")
+            false
+        }
+    }
+
+    private fun saveImportedCredentials(
+        profile: NeteaseSource.NeteaseProfile,
+        cookies: String,
+        expiresAt: Long,
+        candidate: DesktopLoginCandidate
+    ): String? {
+        if (!config.getBoolean("account.save_credentials", true)) return null
+        return try {
+            val saved = vault.save(importedPayload(candidate, profile, cookies, expiresAt))
+            if (saved) null else "登录成功，但凭据保存失败"
+        } catch (error: Exception) {
+            log.w("Account", "save desktop credentials failed: " + error.javaClass.simpleName)
+            error.message ?: "登录成功，但凭据保存失败"
+        }
+    }
+
+    private fun importedPayload(
+        candidate: DesktopLoginCandidate,
+        profile: NeteaseSource.NeteaseProfile,
+        cookies: String,
+        expiresAt: Long
+    ): JsonObject {
+        val payload = LinkedHashMap<String, JsonElement>(candidate.credential)
+        payload["provider"] = JsonPrimitive("netease")
+        payload["cookies"] = JsonPrimitive(cookies)
+        payload["user_id"] = JsonPrimitive(profile.userId)
+        payload["nickname"] = JsonPrimitive(profile.nickname)
+        payload["avatar_url"] = JsonPrimitive(profile.avatarUrl)
+        payload["vip_type"] = JsonPrimitive(profile.vipType)
+        payload["has_music_package"] = JsonPrimitive(profile.hasMusicPackage)
+        payload["red_vip_level"] = JsonPrimitive(profile.redVipLevel)
+        payload["obtained_at"] = JsonPrimitive(System.currentTimeMillis() / 1000L)
+        payload["expires_at"] = JsonPrimitive(expiresAt)
+        payload["app_version"] = JsonPrimitive(BuildConfig.APP_VERSION)
+        payload["imported_from"] = JsonPrimitive("desktop")
+        return JsonObject(payload)
+    }
+
+    private fun restoreDesktopSession(
+        netease: NeteaseSource,
+        previousCookie: String,
+        previousLoggedIn: Boolean
+    ) {
+        try {
+            if (previousLoggedIn && previousCookie.isNotBlank()) {
+                netease.applyCookie(previousCookie)
+            } else {
+                netease.clearLogin()
+            }
+        } catch (error: Exception) {
+            log.w("Account", "restore previous session failed: " + error.javaClass.simpleName)
+        }
+    }
+
+    private fun currentLoggedIn(): Boolean = state.value.loggedIn
+
+    private fun failDesktop(message: String) {
+        update {
+            it.copy(
+                busy = false,
+                status = if (it.loggedIn) "已登录" else "未登录",
+                error = message
+            )
+        }
     }
 
     suspend fun renewIfNeeded(): Boolean = withContext(Dispatchers.IO) {

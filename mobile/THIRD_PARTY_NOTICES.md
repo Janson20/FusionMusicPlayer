@@ -9,6 +9,7 @@
 | Jetpack Compose（UI / Foundation / Material 3 / Material Icons） | Compose BOM 2025.10.01 | Apache-2.0 |
 | Kotlin / kotlinx.coroutines / kotlinx.serialization | 2.2.x / 1.10.2 / 1.9.0 | Apache-2.0 |
 | AndroidX Media3（ExoPlayer / Session / OkHttp DataSource） | 1.11.1 | Apache-2.0 |
+| AndroidX CameraX（Core / Camera2 / Lifecycle / View） | 1.4.2 | Apache-2.0 |
 | OkHttp | 4.12.0 | Apache-2.0 |
 | Coil | 2.7.0 | Apache-2.0 |
 | ZXing core | 3.5.4 | Apache-2.0 |

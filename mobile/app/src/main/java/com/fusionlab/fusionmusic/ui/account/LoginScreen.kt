@@ -14,11 +14,14 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -46,7 +49,11 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 @Composable
-fun LoginScreen(container: AppContainer, onBack: () -> Unit) {
+fun LoginScreen(
+    container: AppContainer,
+    onBack: () -> Unit,
+    onDesktopScan: () -> Unit
+) {
     val account = container.account
     val state by account.snapshot.collectAsState()
     val scope = rememberCoroutineScope()
@@ -93,6 +100,28 @@ fun LoginScreen(container: AppContainer, onBack: () -> Unit) {
             color = if (state.error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(vertical = 8.dp)
         )
+
+        OutlinedCard(
+            onClick = onDesktopScan,
+            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Icon(Icons.Outlined.QrCodeScanner, contentDescription = null)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("从电脑扫码登录", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "电脑端已登录网易云时，扫码把登录状态同步到手机，不用重新输密码。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Icon(Icons.Outlined.ChevronRight, contentDescription = null)
+            }
+        }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             FilterChip(selected = tab == "qr", onClick = { tab = "qr" }, label = { Text("扫码") })

@@ -1,6 +1,6 @@
 # Fusion Music Player — Android（mobile/）
 
-原生 Android 客户端，Kotlin + Jetpack Compose + Media3。桌面端 `app/` 不改；两端共享同一套 JSON 数据 schema 与音源协议行为。
+原生 Android 客户端，Kotlin + Jetpack Compose + Media3。两端共享同一套 JSON 数据 schema 与音源协议行为；桌面端提供手机扫码登录的一次性凭据移交。
 
 ## 当前状态
 
@@ -9,6 +9,7 @@
 - Gradle 工程、Compose 外壳、五标签导航、三态展开播放页、播放队列页、平板 NavigationRail；点歌曲行会直接进入正在播放页。
 - 六个在线音源：网易云、QQ、酷我、酷狗、咪咕、B 站（B 站仅参与跨源兜底）；音源优先级影响搜索排序与跨源兜底。
 - 网易云 eapi/weapi 加密、搜索、播放地址、歌词 bundle、扫码/短信/Cookie 登录、资料与远程歌单。
+- 从桌面扫码登录：CameraX + ZXing 扫描桌面生成的一次性二维码，AES-256-GCM 解密后导入登录态；二维码 180 秒有效、单次使用，需同一 Wi-Fi。
 - 搜索建议（网易云联想）、搜索历史、音源筛选、批量下载；搜索/我的/歌单详情支持多选加入队列、下载或自建歌单。
 - Media3 播放服务、媒体通知（上一首 / 播放暂停 / 下一首）、四模式队列、跨源兜底、实际音质上报、会话恢复、切歌淡入与快进/快退步长。
 - 播放队列长按拖动排序，行内不再放上移/下移按钮；队列行只保留歌名、歌手、时长与溢出菜单，移除操作放在菜单里。
@@ -27,7 +28,7 @@
 
 尚未验证或仍待打磨：
 
-- **只完成过一轮真机冒烟**：Gradle 编译、debug APK、R8 release 打包、冷启动、发现页、播放、上一首/下一首和媒体通知控制已验证；扫码登录、下载、SAF、MediaStore、jaudiotagger、Keystore 与音量均衡仍需要完整设备回归。
+- **只完成过一轮真机冒烟**：Gradle 编译、debug APK、R8 release 打包、冷启动、发现页、播放、上一首/下一首和媒体通知控制已验证；网易扫码登录、桌面扫码登录、相机解码、下载、SAF、MediaStore、jaudiotagger、Keystore 与音量均衡仍需要完整设备回归。
 - 部分音源（QQ 签名兜底、B 站）边界；通知封面首次播放时仍可能先用远程 URI，下载完成后缓存供后续使用；没有设备回归。
 - 自定义下载目录的 SAF 授权可能被系统或文件提供方回收；下载失败会在任务页显示错误，重新在「设置 → 存储与缓存 → 下载目录」选择目录即可。
 - 下载歌词优先写 `MediaStore.Files` 的 `Music/FusionMusicPlayer`，系统不允许时退到 `Download/FusionMusicPlayer`；歌词写入失败只记日志，不会把已完成的音频任务标记为失败。
@@ -115,6 +116,7 @@ files/data/logs/fusion.log
 - FOREGROUND_SERVICE / FOREGROUND_SERVICE_MEDIA_PLAYBACK / FOREGROUND_SERVICE_DATA_SYNC
 - POST_NOTIFICATIONS（Android 13+，用于播放、下载与更新通知）；未授权时媒体通知不会出现，可在应用「设置 → 通知」查看状态并跳转系统设置。
 - WAKE_LOCK
+- CAMERA（仅「从电脑扫码」页使用，不保存相机画面）
 - REQUEST_INSTALL_PACKAGES（应用内更新安装 APK）
 - WRITE_EXTERNAL_STORAGE（仅 Android 9 及以下，`maxSdkVersion=28`；用于写公共音乐目录。Android 10+ 使用 MediaStore，不申请）
 
@@ -123,6 +125,9 @@ files/data/logs/fusion.log
 ## 已知边界
 
 - 第三方音乐接口不是稳定 API；客户端只做重试/降级，不保证永远可用。
+- 桌面扫码登录要求手机与电脑在同一局域网；桌面只接受私网 IPv4，不提供公网中继。
+- 二维码只在 App 内扫描；没有注册系统深链。自定义 scheme 可能被恶意 App 抢注，因此不把携带临时密钥的二维码交给系统相机/第三方扫码器。
+- 手机与桌面共享 `MUSIC_U`；如果网易续期会立即作废旧 token，两端自动续期可能互相踢下线，需真机验证。
 - 部分媒体 CDN 仍是 http；客户端 API/登录强制 HTTPS，媒体允许明文以保证兼容（凭据不走明文）。
 - 标签写入使用 jaudiotagger 3.0.1（LGPL-3.0），只走二进制 Artwork，不调用 AWT 图像接口；写入失败不影响音频下载。
 - 自动更新只支持侧载 APK，不上架 Google Play；需要用户允许「安装未知应用」。

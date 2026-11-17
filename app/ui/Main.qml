@@ -133,6 +133,7 @@ FluWindow {
                 root.showInfo(message, 1800)
         }
         function onLoginRequested() { root.openLogin() }
+        function onLoginTransferRequested() { root.openLoginForTransfer() }
         function onSettingsRequested() { root.openSettings() }
     }
 
@@ -533,6 +534,14 @@ FluWindow {
         loginWindow = ensureWindow(loginWindow, "windows/LoginWindow.qml")
         if (loginWindow)
             loginWindow.openWindow()
+    }
+
+    function openLoginForTransfer() {
+        loginWindow = ensureWindow(loginWindow, "windows/LoginWindow.qml")
+        if (loginWindow) {
+            loginWindow.openWindow()
+            loginWindow.startTransfer()
+        }
     }
 
     // 藏到托盘 / 退出前收子窗口：没建过的就别建了（否则退出时反而多花一笔）

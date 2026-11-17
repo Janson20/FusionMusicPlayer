@@ -625,14 +625,22 @@ AppWindow {
                                 }
                             }
 
-                            FluFilledButton {
+                            RowLayout {
                                 Layout.alignment: Qt.AlignVCenter
-                                text: account.loggedIn ? "退出登录" : "登录"
-                                onClicked: {
-                                    if (account.loggedIn)
-                                        logoutDialog.open()
-                                    else
-                                        window.showLogin()
+                                spacing: 8
+                                FluButton {
+                                    visible: account.loggedIn
+                                    text: "手机扫码"
+                                    onClicked: window.showLoginTransfer()
+                                }
+                                FluFilledButton {
+                                    text: account.loggedIn ? "退出登录" : "登录"
+                                    onClicked: {
+                                        if (account.loggedIn)
+                                            logoutDialog.open()
+                                        else
+                                            window.showLogin()
+                                    }
                                 }
                             }
                         }
@@ -1454,6 +1462,11 @@ AppWindow {
     function showLogin() {
         window.visible = false
         app.openLogin()
+    }
+
+    function showLoginTransfer() {
+        window.visible = false
+        app.openLoginTransfer()
     }
 
     // 选背景图。用 FileDialog（和本地音乐页选文件夹同一套做法）：让用户手打

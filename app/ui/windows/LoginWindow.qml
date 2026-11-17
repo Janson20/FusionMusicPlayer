@@ -6,7 +6,8 @@ import ".."
 import "../components"
 
 /*!
-    网易云登录窗口：扫码 / 手机验证码 / 手机密码 / 粘贴 Cookie。
+    网易云登录窗口：扫码 / 手机验证码 / 手机密码 / 粘贴 Cookie，
+    以及把已登录凭据通过一次性二维码交给手机。
 */
 AppWindow {
     id: window
@@ -24,24 +25,45 @@ AppWindow {
     property string phone: ""
     property string secret: ""
     property bool usePassword: false
+    // 已登录时展示「手机扫码登录」面板，而不是账号概览
+    property bool transferMode: false
+
+    function startTransfer() {
+        if (!account.loggedIn) {
+            transferMode = false
+            return
+        }
+        transferMode = true
+        account.startTransferLogin()
+    }
 
     // 打开时自动开始扫码（已经登录就不用）
     onOpened: {
-        if (!account.loggedIn)
+        if (!account.loggedIn) {
+            transferMode = false
             account.startQrLogin()
+        } else if (transferMode) {
+            account.startTransferLogin()
+        }
     }
 
     onVisibleChanged: {
-        if (!visible)
+        if (!visible) {
+            transferMode = false
             account.cancelQrLogin()
+            account.cancelTransferLogin()
+        }
     }
 
-    // 登录成功后自动关闭
+    // 登录成功后自动关闭；退出登录时收起传输面板
     Connections {
         target: account
         function onLoggedInChanged() {
-            if (account.loggedIn)
+            if (account.loggedIn) {
                 Qt.callLater(function () { window.visible = false })
+            } else {
+                window.transferMode = false
+            }
         }
     }
 
@@ -149,11 +171,145 @@ AppWindow {
             }
             spacing: 16
 
+            // 已登录 → 手机扫码登录
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                visible: account.loggedIn && window.transferMode
+                spacing: 8
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    FluButton {
+                        text: "返回账号"
+                        onClicked: {
+                            window.transferMode = false
+                            account.cancelTransferLogin()
+                        }
+                    }
+                    Item { Layout.fillWidth: true }
+                }
+
+                FluText {
+                    Layout.fillWidth: true
+                    text: "手机扫码登录"
+                    font.pixelSize: 17
+                    font.weight: Font.DemiBold
+                    color: Theme.textPrimary
+                }
+                FluText {
+                    Layout.fillWidth: true
+                    text: "把当前网易云登录状态交给手机，不需要在手机上再输密码。"
+                    font.pixelSize: 11
+                    color: Theme.textTertiary
+                    wrapMode: Text.WordWrap
+                }
+
+                Rectangle {
+                    Layout.alignment: Qt.AlignHCenter
+                    Layout.topMargin: 4
+                    width: 212
+                    height: 212
+                    radius: Theme.radius
+                    color: "#FFFFFF"
+                    border.width: 1
+                    border.color: Theme.border
+
+                    Image {
+                        anchors.centerIn: parent
+                        width: 196
+                        height: 196
+                        source: account.transferQrImage
+                        visible: account.transferQrImage !== ""
+                        fillMode: Image.PreserveAspectFit
+                        cache: false
+                        sourceSize.width: 392
+                        sourceSize.height: 392
+                    }
+                    FluProgressRing {
+                        anchors.centerIn: parent
+                        width: 32
+                        height: 32
+                        strokeWidth: 4
+                        visible: account.transferActive && account.transferQrImage === ""
+                    }
+                    FluIcon {
+                        anchors.centerIn: parent
+                        visible: !account.transferActive
+                                  && account.transferQrImage === ""
+                                  && account.transferStatus.indexOf("已发送") >= 0
+                        iconSource: FluentIcons.CheckMark
+                        iconSize: 42
+                        iconColor: Theme.accent
+                    }
+                }
+
+                FluText {
+                    Layout.alignment: Qt.AlignHCenter
+                    Layout.fillWidth: true
+                    text: account.transferStatus
+                    font.pixelSize: 12
+                    color: account.transferStatus.indexOf("失败") >= 0
+                        ? Theme.danger : Theme.textSecondary
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.WordWrap
+                }
+                FluText {
+                    Layout.alignment: Qt.AlignHCenter
+                    visible: account.transferActive && account.transferSeconds > 0
+                    text: "剩余 " + account.transferSeconds + " 秒 · " + account.transferAddress
+                    font.pixelSize: 11
+                    color: Theme.textTertiary
+                }
+                FluText {
+                    Layout.alignment: Qt.AlignHCenter
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: 360
+                    text: "手机与电脑连接同一 Wi-Fi，打开 Fusion Music Player 的「网易云账号」页，点「从电脑扫码」。"
+                    font.pixelSize: 11
+                    color: Theme.textTertiary
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.WordWrap
+                }
+
+                RowLayout {
+                    Layout.alignment: Qt.AlignHCenter
+                    spacing: 8
+                    FluButton {
+                        text: account.transferActive ? "刷新二维码" : "重新生成"
+                        onClicked: account.startTransferLogin()
+                    }
+                    FluButton {
+                        text: "换一个地址"
+                        visible: account.transferAddresses.length > 1
+                        onClicked: account.cycleTransferAddress()
+                    }
+                    FluButton {
+                        text: "取消"
+                        onClicked: {
+                            window.transferMode = false
+                            account.cancelTransferLogin()
+                        }
+                    }
+                }
+
+                FluText {
+                    Layout.alignment: Qt.AlignHCenter
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: 360
+                    text: "二维码包含一次性登录凭据，180 秒内有效且只能使用一次，请勿截图或转发。"
+                    font.pixelSize: 10
+                    color: Theme.textTertiary
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.WordWrap
+                }
+            }
+
             // 已登录态
             ColumnLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                visible: account.loggedIn
+                visible: account.loggedIn && !window.transferMode
                 spacing: 14
 
                 Item { Layout.fillHeight: true }
@@ -198,7 +354,11 @@ AppWindow {
 
                 RowLayout {
                     Layout.alignment: Qt.AlignHCenter
-                    spacing: 10
+                    spacing: 8
+                    FluButton {
+                        text: "手机扫码登录"
+                        onClicked: window.startTransfer()
+                    }
                     FluButton {
                         text: "刷新账号信息"
                         onClicked: account.refresh()

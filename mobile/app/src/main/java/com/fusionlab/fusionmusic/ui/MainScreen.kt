@@ -44,6 +44,7 @@ import androidx.navigation.navArgument
 import com.fusionlab.fusionmusic.AppContainer
 import com.fusionlab.fusionmusic.R
 import com.fusionlab.fusionmusic.playback.PlaybackController
+import com.fusionlab.fusionmusic.ui.account.DesktopScanScreen
 import com.fusionlab.fusionmusic.ui.account.LoginScreen
 import com.fusionlab.fusionmusic.ui.album.AlbumScreen
 import com.fusionlab.fusionmusic.ui.artist.ArtistScreen
@@ -253,11 +254,28 @@ fun MainScreen(container: AppContainer) {
                 SettingsScreen(
                     container,
                     onBack = { navController.popBackStack() },
-                    onLogin = { navController.navigate(Routes.LOGIN) }
+                    onLogin = { navController.navigate(Routes.LOGIN) },
+                    onDesktopScan = { navController.navigate(Routes.DESKTOP_SCAN) }
                 )
             }
             composable(Routes.LOGIN) {
-                LoginScreen(container, onBack = { navController.popBackStack() })
+                LoginScreen(
+                    container,
+                    onBack = { navController.popBackStack() },
+                    onDesktopScan = { navController.navigate(Routes.DESKTOP_SCAN) }
+                )
+            }
+            composable(Routes.DESKTOP_SCAN) {
+                DesktopScanScreen(
+                    container,
+                    onBack = { navController.popBackStack() },
+                    onLoggedIn = {
+                        // 登录成功后连登录页一起退掉，回到设置/上一级而不是停在登录页
+                        if (!navController.popBackStack(Routes.LOGIN, true)) {
+                            navController.popBackStack()
+                        }
+                    }
+                )
             }
             composable(
                 route = Routes.PLAYLIST_DETAIL,

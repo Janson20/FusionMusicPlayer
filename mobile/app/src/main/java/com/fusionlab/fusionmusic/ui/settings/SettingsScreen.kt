@@ -57,7 +57,8 @@ private val ACCENTS = listOf("#6C4DF6", "#3B82F6", "#0EA5A4", "#E5484D", "#F59E0
 fun SettingsScreen(
     container: AppContainer,
     onBack: () -> Unit,
-    onLogin: () -> Unit
+    onLogin: () -> Unit,
+    onDesktopScan: () -> Unit
 ) {
     val context = LocalContext.current
     val config = container.config
@@ -124,8 +125,9 @@ fun SettingsScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Button(onClick = { scope.launch { account.logout() } }, modifier = Modifier.padding(top = 8.dp)) {
-                Text("退出登录")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
+                Button(onClick = onDesktopScan) { Text("手机扫码") }
+                TextButton(onClick = { scope.launch { account.logout() } }) { Text("退出登录") }
             }
         } else {
             Button(onClick = onLogin, modifier = Modifier.padding(top = 8.dp)) { Text("登录网易云") }

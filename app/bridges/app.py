@@ -129,6 +129,7 @@ class AppController(QObject):
     notify = Signal(str, str)   # level, message
     sourceMetaChanged = Signal()
     loginRequested = Signal()
+    loginTransferRequested = Signal()
     settingsRequested = Signal()
     systemDarkChanged = Signal()
     trayChanged = Signal()
@@ -381,6 +382,10 @@ class AppController(QObject):
     @Slot()
     def openLogin(self) -> None:  # noqa: N802
         self.loginRequested.emit()
+
+    @Slot()
+    def openLoginTransfer(self) -> None:  # noqa: N802
+        self.loginTransferRequested.emit()
 
     @Slot()
     def openSettings(self) -> None:  # noqa: N802
